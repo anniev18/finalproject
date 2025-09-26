@@ -15,15 +15,15 @@ class SFTTrainer(object):
     def __init__(self, args) -> None:
         self.args = args
 
-        wandb.init(reinit=True, config=args.as_dict(),
+        wandb.init(reinit=True, config=vars(args),
                    project=args.wandb_project, name=args.exp_name)
 
         self.device = torch.cuda.current_device()
-        config = AutoConfig.from_pretrained(args.model_name)
+        config = AutoConfig.from_pretrained(args.model_name_hf)
         config.use_cache = True
 
         self.model = AutoModelForCausalLM.from_pretrained(
-            args.model_name,
+            args.model_name_hf,
             torch_dtype=torch.bfloat16 if self.args.lora else None,
             config=config,
             device_map=self.device)
@@ -42,7 +42,7 @@ class SFTTrainer(object):
 
 
         self.tokenizer = AutoTokenizer.from_pretrained(
-            args.model_name, padding_side="left")
+            args.model_name_hf, padding_side="left")
         self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
 
@@ -146,12 +146,6 @@ class SFTTrainer(object):
             if global_step % 10 ==0:
                 val_loss = self.validation()
                 wandb.log({"ce-loss/validation": val_loss}, step=global_step)
-            
-            if global_step % self.args.eval_period == 0:
-                output_dir = os.path.join(
-                    self.args.save_dir, 
-                    f"{self.args.exp_name}/{global_step}")
-                self.save(output_dir)
         
         output_dir = os.path.join(self.args.save_dir, self.args.exp_name, "latest")
         if self.args.lora:

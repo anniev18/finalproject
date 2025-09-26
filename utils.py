@@ -105,18 +105,9 @@ class HarmAugClassifier(object):
         return log_rewards
 
 class LlamaToxicClassifier(object):
-    def __init__(self, gpu_memory_utilization=0.4, version=1, pbar=False, multi_gpu=False) -> None:
-        # if version == 1:
-        #     model_id = "meta-llama/LlamaGuard-7b"
-        # elif version == 2:
-        #     print("version-2")
-        #     model_id = "meta-llama/Meta-Llama-Guard-2-8B"
-        # else:
-        #     print("version-3")
-        #     model_id = "meta-llama/Llama-Guard-3-8B"
+    def __init__(self, gpu_memory_utilization=0.4, pbar=False, multi_gpu=False) -> None:
         model_id = "meta-llama/Meta-Llama-Guard-2-8B"
 
-        self.version = version
         dtype = "bfloat16"
         self.pbar = pbar
 
@@ -143,8 +134,6 @@ class LlamaToxicClassifier(object):
         prompts = [self.tokenizer.apply_chat_template([
             {"role": "user", "content": x},
             {"role": "assistant", "content": y}], tokenize=False) for x, y in zip(prompts, responses)]
-        if self.version == 3:
-            prompts = [prompt + "\n\n" for prompt in prompts]
         return prompts
 
     def compute(self, prompts, responses):

@@ -42,10 +42,6 @@ def generate_and_return_z_logprob(model, prompt_ids, prompt_attention_mask,  eos
     sum_logpf = torch.zeros(prompt_ids.size(0)).float().to(prompt_ids.device)
     attention_mask = prompt_attention_mask.clone()
 
-    # if "Gemma" in model.config.architectures[0]:
-    #     past_key_values = DynamicCache()
-    # else:
-    # past_key_values = DynamicCache()
     if "Llama" in model.config.architectures[0]:
         cache_position = torch.arange(
             state[:, :-1].size(1), dtype=torch.int64, device=prompt_ids.device)
@@ -63,7 +59,6 @@ def generate_and_return_z_logprob(model, prompt_ids, prompt_attention_mask,  eos
         inputs["cache_position"] = cache_position
 
     outputs = model(**inputs)
-    # print(list(outputs.keys()))
     hidden_states = outputs["hidden_states"][-1]
     if "past_key_values" not in outputs:
         past_key_values = None
@@ -105,7 +100,6 @@ def generate_and_return_z_logprob(model, prompt_ids, prompt_attention_mask,  eos
             past_key_values = None
         else:
             past_key_values = output["past_key_values"]
-        # past_key_values = output["past_key_values"]
 
         logits = output["logits"][:, -1, :]
         if i == 0:
@@ -147,41 +141,23 @@ class GFNTrainer(object):
     def __init__(self, args) -> None:
         self.args = args
 
-        wandb.init(reinit=True, config=args.as_dict(),
+        if self.args.active_attacks:
+            wandb.init(reinit=True, config=vars(args),
+                       project=args.wandb_project, name=f"{args.exp_name}-round{args.round}")
+        else:
+            wandb.init(reinit=True, config=vars(args),
                    project=args.wandb_project, name=args.exp_name)
 
         self.device = torch.cuda.current_device()
-        config = AutoConfig.from_pretrained(args.model_name)
+        config = AutoConfig.from_pretrained(args.model_name_hf)
         config.use_cache = True
 
-        # We have two options: Start from the trained one or from the scratch. As a default, we start from the scratch.
-        # if self.args.model_name == "gpt2" or self.args.model_name == "Qwen/Qwen3-1.7B" or self.args.model_name == "Qwen/Qwen2.5-1.5B":
-        #     self.model = AutoModelForCausalLM.from_pretrained(
-        #         args.sft_ckpt,
-        #         config=config,
-        #         device_map=self.device)
-        # else:
-        #     self.model = AutoModelForCausalLM.from_pretrained(
-        #         args.model_name,
-        #         config=config,
-        #         device_map=self.device)
-        #     self.model = PeftModel.from_pretrained(self.model, args.sft_ckpt)
-        #     self.model = self.model.merge_and_unload()
         self.model = AutoModelForCausalLM.from_pretrained(
             args.sft_ckpt,
             config=config,
             device_map=self.device)
 
-        if self.args.model_name == "gpt2":
-            lora_config = LoraConfig(
-                r=args.lora_r,
-                lora_alpha=args.lora_alpha,
-                target_modules=["c_attn"],
-                lora_dropout=args.lora_dropout,
-                bias="none",
-                task_type="CAUSAL_LM"
-            )
-        else:
+        if self.args.lora:
             lora_config = LoraConfig(
                 r=args.lora_r,
                 lora_alpha=args.lora_alpha,
@@ -191,18 +167,14 @@ class GFNTrainer(object):
                 task_type="CAUSAL_LM"
             )
 
-        self.model = get_peft_model(self.model, lora_config)
-        self.model.print_trainable_parameters()
+            self.model = get_peft_model(self.model, lora_config)
+            self.model.print_trainable_parameters()
         model_config = self.model.config
 
-        if "gpt2" in args.model_name:
-            n_dim = model_config.n_embd
+        if "gemma" in args.model_name:
+            n_dim = model_config.text_config.hidden_size
         else:
-            print(model_config)
-            if "gemma" in args.model_name:
-                n_dim = model_config.text_config.hidden_size
-            else:
-                n_dim = model_config.hidden_size
+            n_dim = model_config.hidden_size
 
         self.model.proj_z = nn.Linear(n_dim, 1).to(self.device)
 
@@ -211,25 +183,19 @@ class GFNTrainer(object):
         self.tokenizer = AutoTokenizer.from_pretrained(
             args.sft_ckpt, padding_side="left")
         self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
-        # print(args.victim_gpu_memory_utilization)
-        # print(args.toxicity_gpu_memory_utilization)
-        # if "gemma" in self.args.victim_model:
-        if self.args.iteration > 1:
+
+        if self.args.active_attacks and self.args.round > 1:
             self.victim_model = LLM(
-                args.victim_model, dtype=args.dtype, tensor_parallel_size=1, gpu_memory_utilization=args.victim_gpu_memory_utilization, enable_lora=True, max_loras=4, max_lora_rank=64)
+                args.victim_model_hf, dtype=args.dtype, tensor_parallel_size=1, gpu_memory_utilization=args.victim_gpu_memory_utilization, enable_lora=True, max_loras=4, max_lora_rank=64)
         else:
             self.victim_model = LLM(
-                args.victim_model, dtype=args.dtype, tensor_parallel_size=1, gpu_memory_utilization=args.victim_gpu_memory_utilization)
+                args.victim_model_hf, dtype=args.dtype, tensor_parallel_size=1, gpu_memory_utilization=args.victim_gpu_memory_utilization)
 
         self.victim_model_tokenizer = AutoTokenizer.from_pretrained(
-            args.victim_model, padding_side="left")
+            args.victim_model_hf, padding_side="left")
 
         self.victim_model_tokenizer.pad_token_id = self.victim_model_tokenizer.eos_token_id
 
-        # if "Llama-3" in args.victim_model:
-        #     stop_token_ids = [self.tokenizer.eos_token_id,
-        #                       self.tokenizer.convert_tokens_to_ids("<|eot_id|>")]
-        # else:
         stop_token_ids = [self.tokenizer.eos_token_id]
 
         self.sampling_params = SamplingParams(
@@ -239,21 +205,8 @@ class GFNTrainer(object):
             stop_token_ids=stop_token_ids,
             max_tokens=args.victim_max_len)
 
-        # if "gpt" in args.victim_model or "dolly" in args.victim_model:
-        #     if args.toxicity_fn == "llama":
-        #         self.toxicity_fn = LlamaToxicClassifier(version=args.toxicity_version, gpu_memory_utilization=args.toxicity_gpu_memory_utilization)
-        #     else:
-        #         self.toxicity_fn = RobertaClassifier(self.device)
-        # else:
-        #     print("llama guard")
-        #     # if "Llama-3" in args.victim_model:
-        #     #     version = 3
-        #     # else:
-        #     #     version = 1
-        #     version = args.toxicity_version
-        #     self.toxicity_fn = LlamaToxicClassifier(version=version, gpu_memory_utilization=args.toxicity_gpu_memory_utilization, multi_gpu=False)
-        if args.toxicity_fn == "llama":
-            self.toxicity_fn = LlamaToxicClassifier(version=args.toxicity_version, gpu_memory_utilization=args.toxicity_gpu_memory_utilization, multi_gpu=False)
+        if args.classifier_model == "llama":
+            self.toxicity_fn = LlamaToxicClassifier(gpu_memory_utilization=args.toxicity_gpu_memory_utilization, multi_gpu=False)
         else:
             self.toxicity_fn = HarmAugClassifier(self.device)
 
@@ -303,50 +256,6 @@ class GFNTrainer(object):
             self.prompt_fn = self.make_prompt
         else:
             self.prompt_fn = self.make_chat_prompt
-            
-        # exploration
-        if self.args.exploration and self.args.iteration > 1:
-            prev_exp_name = self.args.exp_name.replace(f"iter{self.args.iteration}", f"iter{self.args.iteration-1}")
-            prev_exp_dir = os.path.join(self.args.save_dir, prev_exp_name)
-            
-            self.rbuffer_prev = ReplayBuffer(
-                self.tokenizer.eos_token_id,
-                self.args.buffer_size,
-                prioritization=self.args.prioritization,
-                compare=self.args.compare)
-            self.rbuffer_prev.load(os.path.join(prev_exp_dir, "latest", "buffer.pkl"))
-            
-            _, _, prev_embeddings = self.rbuffer_prev.sample(100, embs=True)
-            print(prev_embeddings.shape)
-            print(len(self.rbuffer_prev.buffer))
-            
-            if self.args.exploration_type == "rnd":
-                self.random_network = RNDNetwork(prev_embeddings.shape[1]).to(self.device)
-                self.prediction_network = RNDNetwork(prev_embeddings.shape[1]).to(self.device)
-                self.rnd_optimizer = torch.optim.Adam(self.prediction_network.parameters(), lr=self.args.rnd_lr)
-                self.rnd_train()
-
-    def rnd_train(self):
-        max_size = len(self.rbuffer_prev.buffer)
-        t = tqdm(range(self.args.rnd_train_steps), desc="RND training", dynamic_ncols=True, leave=False)
-        for i in t:
-            if i > max_size:
-                j = i % max_size
-            else:
-                j = i
-            batch = self.rbuffer_prev.buffer[j:j+self.args.rnd_batch_size]
-            batch_embs = torch.stack([item.emb for item in batch], dim=0).to(self.device)
-        
-            with torch.no_grad():
-                true = self.random_network(batch_embs)
-            pred = self.prediction_network(batch_embs)
-            
-            loss = F.mse_loss(pred, true)
-            self.rnd_optimizer.zero_grad()
-            loss.backward()
-            self.rnd_optimizer.step()
-            
-            t.set_description(f"Step :{i}, RND loss: {loss.item():.4f}")
 
     def get_total_reward_temp(self, step):
         args = self.args
@@ -506,7 +415,7 @@ class GFNTrainer(object):
         victim_prompts = [self.prompt_fn(x) for x in decoded_responses]
 
         # if "gemma" in self.args.victim_model:
-        if self.args.iteration > 1:
+        if self.args.active_attacks and self.args.round > 1:
             llm_outputs = self.victim_model.generate(
                 victim_prompts, self.sampling_params, use_tqdm=False, lora_request=LoRARequest("my_adapter", 1, self.args.victim_ckpt))
         else:
@@ -521,56 +430,17 @@ class GFNTrainer(object):
                 victim_responses.append(response.text)
                 attack_prompts.append(decoded_responses[i])
 
-        if "gpt2" in self.args.victim_model or "dolly" in self.args.victim_model:
-            if self.args.toxicity_fn == "llama":
-                # it gives log-reward
-                c_log_reward = self.toxicity_fn.compute(
-                    attack_prompts, victim_responses)
-                c_log_reward = torch.tensor(c_log_reward)
+        # it gives log-reward
+        c_log_reward = self.toxicity_fn.compute(
+            attack_prompts, victim_responses)
+        c_log_reward = torch.tensor(c_log_reward)
 
-                log_chunks = torch.split(
-                    c_log_reward, self.args.num_r_samples, dim=0)
-                c_log_reward = torch.stack(log_chunks, dim=0)  # [b,r]
-            else:
-                c_reward = self.toxicity_fn.compute(predictions=victim_responses, 
-                                                    sparse=self.args.sparse, 
-                                                    threshold=self.args.threshold, 
-                                                    filter=self.args.filter)
-
-                c_reward = torch.tensor(c_reward)
-                chunks = torch.split(c_reward, self.args.num_r_samples, dim=0)
-                c_reward = torch.stack(chunks, dim=0)  # [b, r]
-
-                c_log_reward = torch.log(c_reward)
-        else:
-            # it gives log-reward
-            c_log_reward = self.toxicity_fn.compute(
-                attack_prompts, victim_responses)
-            c_log_reward = torch.tensor(c_log_reward)
-
-            log_chunks = torch.split(
-                c_log_reward, self.args.num_r_samples, dim=0)
-            c_log_reward = torch.stack(log_chunks, dim=0)  # [b,r]
+        log_chunks = torch.split(
+            c_log_reward, self.args.num_r_samples, dim=0)
+        c_log_reward = torch.stack(log_chunks, dim=0)  # [b,r]
         avg_c_log_reward = c_log_reward.mean(1).to(self.device)
         
-        if self.args.exploration and self.args.iteration > 1:
-            curr_embs = self.sentence_encoder.encode(decoded_responses, convert_to_tensor=True)
-            _, _, prev_embs = self.rbuffer_prev.sample(len(decoded_responses), embs=True)
-            
-            curr_embs = curr_embs.to(self.device)
-            prev_embs = prev_embs.to(self.device)
-            
-            if self.args.exploration_type == "rnd":
-                pred = self.prediction_network(curr_embs)
-                true = self.random_network(curr_embs)
-                rnd_loss = F.mse_loss(pred, true, reduction="none")
-                updated_avg_c_log_reward = avg_c_log_reward + self.args.exploration_lamb * rnd_loss.mean(1).detach()
-            elif self.args.exploration_type == "cosine":
-                cos_sim = F.cosine_similarity(curr_embs.unsqueeze(1), prev_embs.unsqueeze(0), -1)
-                updated_avg_c_log_reward = avg_c_log_reward + self.args.exploration_lamb * (1.0 - cos_sim.mean(1).detach())
-            return lm_logreward, updated_avg_c_log_reward, decoded_responses, avg_c_log_reward
-        else:
-            return lm_logreward, avg_c_log_reward, decoded_responses, avg_c_log_reward
+        return lm_logreward, avg_c_log_reward, decoded_responses, avg_c_log_reward
 
     def get_online_samples(self, batch, max_len, temp=1.0):
         # input_ids is left-side padded
@@ -715,12 +585,7 @@ class GFNTrainer(object):
                 "proj_z": self.model.proj_z.state_dict()}
         ckpt_file = os.path.join(output_dir, "ckpt.pt")
         torch.save(ckpt, ckpt_file)
-        
-        if "latest" in output_dir and self.args.exploration and self.args.iteration > 1:
-            rbuffer.merge(self.rbuffer_prev)
-            rbuffer.save(os.path.join(output_dir, "buffer.pkl"))
-        else:
-            rbuffer.save(os.path.join(output_dir, "buffer.pkl"))
+        rbuffer.save(os.path.join(output_dir, "buffer.pkl"))
 
     def load(self, output_dir, model, optimizer, scheduler, rbuffer):
         # load checkpoint and return starting step
@@ -875,15 +740,11 @@ class GFNTrainer(object):
             t.set_description(
                 f"Step {global_step}: {formatted_dict(batch_metrics)}")
 
-            if global_step % self.args.eval_period == 0:
-                output_dir = os.path.join(
-                    self.args.save_dir, f"{self.args.exp_name}/{global_step}")
-                self.save(output_dir, self.rbuffer, global_step)
-
-        output_dir = os.path.join(
-            self.args.save_dir, self.args.exp_name, "latest")
+        if self.args.active_attacks:
+            output_dir = os.path.join(
+                self.args.save_dir, f"{self.args.exp_name}-round{self.args.round}", "latest")
+        else:
+            output_dir = os.path.join(
+                self.args.save_dir, self.args.exp_name, "latest")
         self.save(output_dir, self.rbuffer, global_step)
-
-        eval_metrics = self.eval()
-        wandb.log(eval_metrics, step=global_step)
         wandb.finish()

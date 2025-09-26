@@ -39,6 +39,28 @@ python main.py \
     --log_dir $ATTACK_LOG_DIR \
     --save_dir $ATTACK_SAVE_DIR \
     --sft_ckpt $SFT_SAVE_DIR
+    --lora
+    // Active Attacks argument
+    --active_attacks \
+    --interval 1000
+```
+
+## MLE smoothing for attack LLM
+Given collected prompt dataset, we can finally obtain MLE smoothed attacker LLM
+```bash
+python main.py \ 
+    --mode mle \
+    --model_name $ATTACKER_NAME \
+    --lr 3e-5 \
+    --train_steps 200 \
+    --num_warmup_steps 0 \
+    --grad_acc_steps 32 \
+    --batch_size 1024 \
+    --seed 0 \
+    --exp_name attacker-$ATTACKER_NAME-victim-$VICTIM_NAME-classifier-$CLASSIFIER_NAME/seed$seed \
+    --log_dir $MLE_LOG_DIR \
+    --save_dir $MLE_SAVE_DIR \
+    --attack_ckpt $ATTACK_SAVE_DIR
     // Active Attacks argument
     --active_attacks \
     --interval 1000
