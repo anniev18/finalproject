@@ -7,9 +7,42 @@ from dataset import get_dataloader
 from tqdm import tqdm
 from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
                           get_linear_schedule_with_warmup)
-from utils import InfIterator, get_decay_parameter_names
 import numpy as np
 from peft import LoraConfig, get_peft_model
+from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
+
+
+class InfIterator(object):
+    def __init__(self, iterable):
+        self.iterable = iterable
+        self.iterator = iter(self.iterable)
+
+    def __next__(self):
+        try:
+            return next(self.iterator)
+        except StopIteration:
+            self.iterator = iter(self.iterable)
+            return next(self.iterator)
+
+    def __len__(self):
+        return len(self.iterator)
+
+
+def get_parameter_names(model, forbidden_layer_types):
+    result = []
+    for name, child in model.named_children():
+        result += [
+            f"{name}.{n}"
+            for n in get_parameter_names(child, forbidden_layer_types)
+            if not isinstance(child, tuple(forbidden_layer_types))
+        ]
+    result += list(model._parameters.keys())
+    return result
+
+
+def get_decay_parameter_names(model):
+    decay_parameters = get_parameter_names(model, ALL_LAYERNORM_LAYERS)
+    return [name for name in decay_parameters if "bias" not in name]
 
 class SFTTrainer(object):
     def __init__(self, args) -> None:
@@ -20,13 +53,14 @@ class SFTTrainer(object):
 
         self.device = torch.cuda.current_device()
         config = AutoConfig.from_pretrained(args.model_name_hf)
-        config.use_cache = True
+        config.use_cache = False
 
         self.model = AutoModelForCausalLM.from_pretrained(
             args.model_name_hf,
-            torch_dtype=torch.bfloat16 if self.args.lora else None,
+            torch_dtype=torch.bfloat16,
             config=config,
             device_map=self.device)
+        self.model.gradient_checkpointing_enable()
         
         if self.args.lora:
             lora_config = LoraConfig(
@@ -152,5 +186,3 @@ class SFTTrainer(object):
             self.model = self.model.merge_and_unload()
         self.save(output_dir)
         wandb.finish()
-
-

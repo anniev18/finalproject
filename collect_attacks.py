@@ -4,20 +4,13 @@ import math
 import os
 import random
 
-import evaluate
 import numpy as np
 import torch
 import torch.nn.functional as F
 from peft import PeftModel
-from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
-from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
-                          GenerationConfig, pipeline)
+from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 
-from dataset import get_dataloader
-from utils import (InfIterator, LlamaToxicClassifier, base_to_lora,
-                   batch_cosine_similarity_kernel, load_victim_config,
-                   lora_to_base)
 
 
 def make_prompt(instruction, _):

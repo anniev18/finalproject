@@ -1,10 +1,5 @@
 import argparse
 
-from trainers.sft_trainer import SFTTrainer
-from trainers.gfn_trainer import GFNTrainer
-from trainers.safety_trainer import SafetyTrainer
-from trainers.mle_trainer import MLETrainer
-
 
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
@@ -105,9 +100,14 @@ if __name__ == "__main__":
     args.victim_model_hf = victim_model_hf
     
     if args.mode == "sft":
+        from trainers.sft_trainer import SFTTrainer
+
         trainer = SFTTrainer(args)
         trainer.train()
     elif args.mode == "redteam":
+        from trainers.gfn_trainer import GFNTrainer
+        from trainers.safety_trainer import SafetyTrainer
+
         if args.active_attacks:
             num_rounds = args.train_steps // args.interval
             for round in range(num_rounds):
@@ -122,9 +122,13 @@ if __name__ == "__main__":
             trainer = GFNTrainer(args)
             trainer.train()
     elif args.mode == "mle":
+        from trainers.mle_trainer import MLETrainer
+
         trainer = MLETrainer(args)
         trainer.train()
     elif args.mode == "safety":
+        from trainers.safety_trainer import SafetyTrainer
+
         trainer = SafetyTrainer(args)
         trainer.train()
     else:
