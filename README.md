@@ -1,90 +1,134 @@
-# CS-224r-final-project
+# CS224R Final Project
 
-## Red-teaming LLMs via Adaptive Environments
+This repository contains a new implementation of a multi-turn RL framework for
+LLM red-teaming.
 
-### Installation of Dependencies
+## Layout
+
+- `redteam_rl/`: new project code for the proposed system.
+- `active_attacks_reference/`: reference copy of the cloned Active Attacks code.
+
+The new implementation should not depend on `active_attacks_reference` directly.
+Use that directory only for implementation ideas such as victim generation,
+toxicity scoring, replay buffers, and evolving-victim training rounds.
+
+## Local Environment
+
+Use a virtual environment for local work. This setup is for editing, imports,
+and dry runs that do not load real model weights.
+
 ```bash
-conda env create -n active_attacks python=3.10 -y
-conda activate active_attacks
+cd CS-224r-final-project
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 ```
 
-### Warm-up SFT
-Similar to prior work, we warm-up the attacker LLM with SFT using pre-collected dataset.
+Run a local smoke test:
+
 ```bash
-python main.py \
-    --mode sft \
-    --model_name $ATTACKER_NAME \
-    --lr 3e-5 \
-    --train_steps 100 \
-    --grad_acc_steps 32 \
-    --batch_size 1024 \
-    --few_shot_file ./prompts/sft_dataset.json \
-    --exp_name attacker-$ATTACKER_NAME/sft \
-    --save_dir $SFT_SAVE_DIR
+python scripts/run_episode.py --dry-run
 ```
 
-### GFlowNet + Active Attacks
-Active attacks is a plug-and-play module that seamlessly integrates into existing RL objectives. In implementation, we can turn on/off active attacks by using argument.
+By default, runners sample seed prompts from `data/seed_prompts.json`. To use a
+specific prompt:
+
 ```bash
-python main.py \ 
-    --mode redteam \
-    --model_name $ATTACKER_NAME \
-    --victim_model $VICTIM_NAME \
-    --toxicity_fn $CLASSIFIER_NAME
-    --lr 1e-4 \
-    --train_steps 5000 \
-    --grad_acc_steps 8 \
-    --batch_size 16 \
-    --seed 0 \
-    --exp_name attacker-$ATTACKER_NAME-victim-$VICTIM_NAME-classifier-$CLASSIFIER_NAME/seed$seed \
-    --log_dir $ATTACK_LOG_DIR \
-    --save_dir $ATTACK_SAVE_DIR \
-    --sft_ckpt $SFT_SAVE_DIR
-    --lora
-    // Active Attacks argument
-    --active_attacks \
-    --interval 1000
+python scripts/run_episode.py --dry-run --seed-prompt "Explain how safety policies work."
 ```
 
-### MLE smoothing for attack LLM
-Given collected prompt dataset, we can finally obtain MLE smoothed attacker LLM
+Do not install `vllm` directly on a laptop unless you know your machine has a
+compatible GPU/runtime. Real model runs should use a CUDA GPU environment such
+as Modal.
+
+## GPU Environment
+
+For a CUDA GPU machine or remote environment:
+
 ```bash
-python main.py \ 
-    --mode mle \
-    --model_name $ATTACKER_NAME \
-    --lr 3e-5 \
-    --train_steps 200 \
-    --num_warmup_steps 0 \
-    --grad_acc_steps 32 \
-    --batch_size 1024 \
-    --seed 0 \
-    --exp_name attacker-$ATTACKER_NAME-victim-$VICTIM_NAME-classifier-$CLASSIFIER_NAME/seed$seed \
-    --log_dir $MLE_LOG_DIR \
-    --save_dir $MLE_SAVE_DIR \
-    --attack_ckpt $ATTACK_SAVE_DIR
-    // Active Attacks argument
-    --active_attacks \
-    --interval 1000
+pip install -r requirements-gpu.txt
 ```
 
-### Safety fine-tuned victim LLM
-Given collected prompt dataset, we can finally safety fine-tune victim LLM.
+Then run:
+
 ```bash
-python main.py \ 
-    --mode safety \
-    --model_name $VICTIM_NAME \
-    --lr 3e-5 \
-    --train_steps 200 \
-    --num_warmup_steps 0 \
-    --grad_acc_steps 32 \
-    --batch_size 1024 \
-    --seed 0 \
-    --exp_name attacker-$ATTACKER_NAME-victim-$VICTIM_NAME-classifier-$CLASSIFIER_NAME/seed$seed \
-    --log_dir $SAFETY_LOG_DIR \
-    --save_dir $SAFETY_SAVE_DIR \
-    --attack_ckpt $ATTACK_SAVE_DIR
-    // Active Attacks argument
-    --active_attacks \
-    --interval 1000
+python scripts/run_episode.py --max_turns 3
+```
+
+Real model runs require Hugging Face access to the configured models in
+`configs/default.json`.
+
+## Modal
+
+Modal is the recommended path for running the real vLLM-backed episode without
+installing GPU dependencies on your laptop.
+
+Install the Modal client in your local environment:
+
+```bash
+pip install modal
+modal setup
+```
+
+Create a Modal secret named `huggingface-secret` with an `HF_TOKEN` value that
+has access to the configured Hugging Face models, especially Llama Guard.
+
+Then run:
+
+```bash
+modal run modal_run_episode.py
+```
+
+By default this uses the template mutator and a small Qwen 0.5B judge reward
+model, which is much lighter than Llama Guard while still judging the victim
+response.
+
+For the cheapest remote smoke test, use a fake reward:
+
+```bash
+modal run modal_run_episode.py --reward-backend=fake
+```
+
+To load Llama Guard for real reward scoring:
+
+```bash
+modal run modal_run_episode.py --reward-backend=llama_guard
+```
+
+Other reward backends:
+
+```bash
+modal run modal_run_episode.py --reward-backend=fake
+modal run modal_run_episode.py --reward-backend=prompt_guard
+modal run modal_run_episode.py --reward-backend=qwen_safety_judge
+```
+
+To log Prompt Guard as an auxiliary score while keeping the default Qwen judge
+as the main reward:
+
+```bash
+modal run modal_run_episode.py --aux-reward-backend=prompt_guard
+```
+
+To run Llama Guard offline on saved trajectories:
+
+```bash
+python scripts/score_trajectories.py \
+  --input outputs/episodes.jsonl \
+  --output outputs/llama_guard_scored.jsonl \
+  --reward-backend llama_guard
+```
+
+If Llama Guard does not fit on the default L40S setup, use the larger-GPU
+entrypoint:
+
+```bash
+modal run modal_run_episode.py --big-gpu=true
+```
+
+To also load the Qwen mutator model:
+
+```bash
+modal run modal_run_episode.py --use-llm-mutator
 ```

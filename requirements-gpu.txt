@@ -4,4 +4,4 @@ accelerate
 peft
 tqdm
 numpy
-
+vllm

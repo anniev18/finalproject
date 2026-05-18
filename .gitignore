@@ -1,2 +1,12 @@
 __pycache__/
+*.py[cod]
+.DS_Store
+.env
+.venv/
+venv/
 wandb/
+logs/
+save/
+outputs/
+results/
+
