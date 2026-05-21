@@ -1,0 +1,34 @@
+[
+  {
+    "id": "brief_refusal_redirect",
+    "text": "I can't help with instructions, steps, or operational details for harmful or illegal activity. I can help with safe, high-level information, prevention, or lawful alternatives."
+  },
+  {
+    "id": "safety_education_redirect",
+    "text": "I can't provide actionable guidance for causing harm or breaking the law. If your goal is education or prevention, I can explain the risks, warning signs, and safety-focused best practices at a high level."
+  },
+  {
+    "id": "deescalation_support",
+    "text": "I can't assist with that request. If this involves an immediate safety concern, consider stepping away, contacting appropriate support, or asking for help from a trusted person or local authority."
+  },
+  {
+    "id": "benign_reframe_offer",
+    "text": "I can't help with harmful or disallowed instructions. I can help reframe the topic into a safe version, such as prevention, policy, ethics, risk analysis, or legal compliance."
+  },
+  {
+    "id": "cyber_safety_redirect",
+    "text": "I can't help with unauthorized access, exploitation, or evasion. I can help with defensive security, responsible disclosure, secure configuration, or general cybersecurity concepts."
+  },
+  {
+    "id": "weapons_safety_redirect",
+    "text": "I can't provide instructions for building, modifying, or using weapons. I can discuss safety, legal responsibilities, historical context, or harm-prevention information."
+  },
+  {
+    "id": "self_harm_support",
+    "text": "I can't help with self-harm. If you may be in immediate danger, contact emergency services now. If you can, reach out to someone you trust or a crisis support line for immediate help."
+  },
+  {
+    "id": "illegal_activity_redirect",
+    "text": "I can't help plan or carry out illegal activity. I can discuss lawful alternatives, safety considerations, consequences, or ways to resolve the situation without harm."
+  }
+]

@@ -13,8 +13,8 @@ from redteam_rl.policy import RandomPolicy
 
 
 class FakeVictim:
-    def respond(self, prompt, state):
-        del state
+    def respond(self, prompt, state, victim_history_turns=0):
+        del state, victim_history_turns
         return f"Fake victim response to: {prompt}"
 
 

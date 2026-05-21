@@ -2,9 +2,40 @@
   "models": {
     "victim": "Qwen/Qwen2.5-1.5B-Instruct",
     "mutator": "Qwen/Qwen2.5-1.5B-Instruct",
-    "qwen_safety_judge": "Qwen/Qwen2.5-0.5B-Instruct",
+    "qwen_safety_judge": "Qwen/Qwen2.5-1.5B-Instruct",
+    "embedding": "sentence-transformers/all-MiniLM-L6-v2",
     "prompt_guard": "meta-llama/Llama-Prompt-Guard-2-86M",
     "llama_guard": "meta-llama/Meta-Llama-Guard-2-8B"
+  },
+  "environment": {
+    "max_turns": 5,
+    "victim_history_turns": 3
+  },
+  "attacker_evolution": {
+    "enabled": false,
+    "update_period_episodes": 0,
+    "initial_adapter_path": null
+  },
+  "victim_evolution": {
+    "enabled": false,
+    "num_rounds": 2,
+    "episodes_per_round": 4,
+    "min_reward_for_training": 1.0,
+    "output_dir": "outputs/victim_rounds",
+    "safety_target_file": "data/safety_target_templates.json",
+    "skip_empty_updates": true,
+    "verify_adapter_update": false,
+    "trajectory_bank_path": "outputs/trajectory_bank/episodes.jsonl",
+    "trajectory_source": "fresh_plus_bank",
+    "max_bank_episodes": 200
+  },
+  "state_features": {
+    "history_window": 4,
+    "max_length": 256,
+    "device": "auto",
+    "include_victim_response": true,
+    "normalize_embeddings": true,
+    "response_length_norm_chars": 1000
   },
   "victim": {
     "dtype": "bfloat16",
@@ -29,7 +60,10 @@
     "tensor_parallel_size": 1,
     "gpu_memory_utilization": 0.2,
     "enforce_eager": true,
-    "max_history_chars": 4000
+    "max_history_chars": 4000,
+    "enable_lora": false,
+    "max_loras": 4,
+    "max_lora_rank": 64
   },
   "reward": {
     "backend": "qwen_safety_judge",
@@ -70,6 +104,24 @@
     "max_grad_norm": 1.0,
     "warmup_steps": 0,
     "max_length": 1024,
+    "dtype": "bfloat16",
+    "device_map": "auto",
+    "lora_r": 32,
+    "lora_alpha": 16,
+    "lora_dropout": 0.0,
+    "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
+    "seed": 42
+  },
+  "attacker_training": {
+    "output_dir": "outputs/attacker_rounds",
+    "train_steps": 100,
+    "batch_size": 8,
+    "grad_accum_steps": 4,
+    "lr": 0.00003,
+    "weight_decay": 0.0,
+    "max_grad_norm": 1.0,
+    "warmup_steps": 0,
+    "max_length": 2048,
     "dtype": "bfloat16",
     "device_map": "auto",
     "lora_r": 32,

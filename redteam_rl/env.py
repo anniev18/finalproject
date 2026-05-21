@@ -16,6 +16,7 @@ from redteam_rl.victims import VictimModel
 @dataclass(frozen=True)
 class EnvConfig:
     max_turns: int = 5
+    victim_history_turns: int = 3
 
 
 class RedTeamEnv:
@@ -43,9 +44,15 @@ class RedTeamEnv:
             raise RuntimeError("Call reset() before step().")
 
         attack_step = self.attacker.act(self.state)
-        victim_response = self.victim.respond(attack_step.prompt, self.state)
+        victim_response = self.victim.respond(
+            attack_step.prompt,
+            self.state,
+            victim_history_turns=self.config.victim_history_turns,
+        )
         reward = self.reward_model.score(attack_step.prompt, victim_response, self.state)
-        metadata: dict[str, object] = {}
+        metadata: dict[str, object] = dict(attack_step.metadata or {})
+        if hasattr(self.victim, "last_debug_prompt") and self.victim.last_debug_prompt:
+            metadata["victim_input"] = self.victim.last_debug_prompt
         if hasattr(self.reward_model, "last_labels") and self.reward_model.last_labels:
             metadata["judge_label"] = self.reward_model.last_labels[-1]
         auxiliary_scores = {

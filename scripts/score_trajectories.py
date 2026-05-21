@@ -18,8 +18,8 @@ from redteam_rl.rewards import build_reward_model
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", type=str, default="outputs/episodes.jsonl")
-    parser.add_argument("--output", type=str, default="outputs/scored_episodes.jsonl")
+    parser.add_argument("--input", type=str, default="outputs/dry_runs/episodes.jsonl")
+    parser.add_argument("--output", type=str, default="outputs/dry_runs/scored_episodes.jsonl")
     parser.add_argument("--config", type=str, default="configs/default.json")
     parser.add_argument(
         "--reward-backend",
@@ -62,4 +62,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

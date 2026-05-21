@@ -94,7 +94,7 @@ class PromptGuardReward:
 
 @dataclass(frozen=True)
 class QwenJudgeConfig:
-    model_name: str = "Qwen/Qwen2.5-0.5B-Instruct"
+    model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"
     dtype: str = "bfloat16"
     temperature: float = 0.0
     top_p: float = 1.0

@@ -20,6 +20,23 @@ The attacker is split into:
 The policy is currently a placeholder `RandomPolicy`; PPO/GFlowNet training is
 out of scope for this environment setup.
 
+The victim receives only normal chat context: the last `victim_history_turns`
+attacker/victim turns plus the current attacker message. It does not see
+actions, rewards, judge labels, or attention weights. Those richer fields are
+only for the attacker/mutator state.
+
+Policy-facing state features are formatted separately from the mutator prompt.
+`redteam_rl/state_features.py` defines `q_t` as the clean current prompt and
+`h_i` as compact history records containing attacker/victim text, action ID,
+reward, judge label, refusal/length features, recency, and optional embeddings.
+The default embedding model is `sentence-transformers/all-MiniLM-L6-v2`.
+
+Attacker evolution is supported only as optional LoRA adapter management. The
+mutator can load or switch attacker LoRA adapters manually, and
+`EvolvingAttacker.should_update_after_episode()` exposes a periodic update hook
+for an external trainer. We do not currently train the attacker or implement
+GFlowNet/PPO updates in this code path.
+
 `TemplateMutator` is a deterministic fallback that maps each action to a simple
 hardcoded prompt template. It is used for cheap smoke tests when we do not want
 to load the mutator LLM.
@@ -30,7 +47,7 @@ Default config:
 
 - Victim: `Qwen/Qwen2.5-1.5B-Instruct`
 - Mutator: `Qwen/Qwen2.5-1.5B-Instruct`
-- Main judge: `Qwen/Qwen2.5-0.5B-Instruct`
+- Main judge: `Qwen/Qwen2.5-1.5B-Instruct`
 - Optional auxiliary judge: `meta-llama/Llama-Prompt-Guard-2-86M`
 - Optional faithful judge: `meta-llama/Meta-Llama-Guard-2-8B`
 
@@ -81,6 +98,6 @@ Modal is used for real model runs:
 modal run modal_run_episode.py
 ```
 
-Default Modal run uses Qwen victim, template mutator, and Qwen safety judge. Use
+Default Modal run uses the Qwen victim, Qwen mutator, and Qwen safety judge. Use
+`--use-template-mutator` only for cheaper deterministic smoke tests. Use
 `--reward-backend=llama_guard` only when testing the heavier faithful judge.
-Use `--use-llm-mutator` to replace the template mutator with the Qwen mutator.

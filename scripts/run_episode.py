@@ -10,20 +10,22 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from redteam_rl.attacker import Attacker
+from redteam_rl.attacker import Attacker, EvolvingAttacker
 from redteam_rl.config import load_config
-from redteam_rl.env import EnvConfig, RedTeamEnv
+from redteam_rl.env import RedTeamEnv
 from redteam_rl.logging import JsonlEpisodeLogger
 from redteam_rl.mutators import LLMMutator, TemplateMutator
 from redteam_rl.policy import RandomPolicy
 from redteam_rl.rewards import build_reward_model
 from redteam_rl.seed_prompts import sample_seed_prompt
+from redteam_rl.trajectory_bank import append_episode
+from redteam_rl.versioning import build_model_metadata, new_run_id
 from redteam_rl.victims import EvolvingVictim, VLLMVictim
 
 
 class FakeVictim:
-    def respond(self, prompt, state):
-        del state
+    def respond(self, prompt, state, victim_history_turns=0):
+        del state, victim_history_turns
         return f"Fake victim response to: {prompt}"
 
 
@@ -39,10 +41,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed-prompt", type=str, default=None)
     parser.add_argument("--seed-prompt-file", type=str, default="data/seed_prompts.json")
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--max_turns", type=int, default=3)
-    parser.add_argument("--log_file", type=str, default="outputs/episodes.jsonl")
+    parser.add_argument("--max_turns", type=int, default=None)
+    parser.add_argument("--victim-history-turns", type=int, default=None)
+    parser.add_argument("--log_file", type=str, default="outputs/dry_runs/episodes.jsonl")
+    parser.add_argument("--trajectory-bank", type=str, default="outputs/trajectory_bank/episodes.jsonl")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--use-template-mutator", action="store_true")
+    parser.add_argument("--show-mutator-input", action="store_true")
+    parser.add_argument("--show-victim-input", action="store_true")
+    parser.add_argument("--attacker-lora-adapter", type=str, default=None)
     parser.add_argument(
         "--reward-backend",
         type=str,
@@ -59,24 +66,57 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _judge_model_name(cfg, reward_backend: str) -> str:
+    if reward_backend in {"qwen_judge", "qwen_safety_judge"}:
+        return cfg.models.qwen_safety_judge
+    if reward_backend == "prompt_guard":
+        return cfg.models.prompt_guard
+    if reward_backend == "llama_guard":
+        return cfg.models.llama_guard
+    return "fake"
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
+    run_id = new_run_id("local_episode")
     seed_prompt = args.seed_prompt or sample_seed_prompt(args.seed_prompt_file, seed=args.seed)
+    if args.attacker_lora_adapter and (args.dry_run or args.use_template_mutator):
+        raise ValueError("--attacker-lora-adapter requires the LLM mutator.")
 
     policy = RandomPolicy()
     if args.dry_run or args.use_template_mutator:
         mutator = TemplateMutator()
     else:
-        mutator = LLMMutator(cfg.mutator_config())
+        config_initial_attacker_adapter = cfg.attacker_evolution.get("initial_adapter_path")
+        use_attacker_lora = args.attacker_lora_adapter is not None or config_initial_attacker_adapter is not None
+        mutator = LLMMutator(
+            cfg.mutator_config(enable_lora=use_attacker_lora or cfg.mutator.get("enable_lora", False)),
+            capture_debug_prompt=args.show_mutator_input,
+            lora_adapter_path=args.attacker_lora_adapter,
+        )
 
-    attacker = Attacker(policy=policy, mutator=mutator)
+    attacker = (
+        EvolvingAttacker(
+            policy=policy,
+            mutator=mutator,
+            config=cfg.attacker_evolution_config(
+                initial_adapter_path=args.attacker_lora_adapter
+                or cfg.attacker_evolution.get("initial_adapter_path")
+            ),
+        )
+        if cfg.attacker_evolution.get("enabled", False) or args.attacker_lora_adapter
+        else Attacker(policy=policy, mutator=mutator)
+    )
 
     if args.dry_run:
         victim = FakeVictim()
         reward_model = FakeReward()
+        reward_backend = "fake"
     else:
-        victim = EvolvingVictim(VLLMVictim(cfg.victim_config()))
+        victim = EvolvingVictim(
+            VLLMVictim(cfg.victim_config(), capture_debug_prompt=args.show_victim_input)
+        )
         reward_backend = args.reward_backend or cfg.reward_backend()
         reward_model = build_reward_model(
             reward_backend,
@@ -95,7 +135,14 @@ def main() -> None:
     }
 
     env = RedTeamEnv(
-        config=EnvConfig(max_turns=args.max_turns),
+        config=cfg.env_config(
+            **({"max_turns": args.max_turns} if args.max_turns is not None else {}),
+            **(
+                {"victim_history_turns": args.victim_history_turns}
+                if args.victim_history_turns is not None
+                else {}
+            ),
+        ),
         attacker=attacker,
         victim=victim,
         reward_model=reward_model,
@@ -113,16 +160,49 @@ def main() -> None:
         print(f"victim: {turn.victim_response}")
         print()
 
-    logger.log_episode(
-        state,
-        metadata={
+    run_metadata = build_model_metadata(
+        run_id=run_id,
+        victim_model="fake" if args.dry_run else cfg.models.victim,
+        victim_adapter_path=None,
+        attacker_model="template" if args.dry_run or args.use_template_mutator else cfg.models.mutator,
+        attacker_adapter_path=args.attacker_lora_adapter,
+        judge_model=_judge_model_name(cfg, reward_backend),
+        extra={
             "config": args.config,
             "dry_run": args.dry_run,
-            "max_turns": args.max_turns,
+            "max_turns": env.config.max_turns,
+            "victim_history_turns": env.config.victim_history_turns,
             "seed_prompt_file": args.seed_prompt_file,
         },
     )
+    for turn in state.turns:
+        turn.metadata.update(
+            {
+                "run_id": run_metadata["run_id"],
+                "victim_model": run_metadata["victim_model"],
+                "victim_version": run_metadata["victim_version"],
+                "victim_adapter_path": run_metadata["victim_adapter_path"],
+                "attacker_model": run_metadata["attacker_model"],
+                "attacker_version": run_metadata["attacker_version"],
+                "attacker_adapter_path": run_metadata["attacker_adapter_path"],
+                "judge_model": run_metadata["judge_model"],
+            }
+        )
+
+    logger.log_episode(
+        state,
+        metadata=run_metadata,
+    )
+    append_episode(
+        state,
+        path=args.trajectory_bank,
+        metadata={
+            **run_metadata,
+            "source": "scripts/run_episode.py",
+        },
+    )
     print(f"logged episode to {args.log_file}")
+    print(f"appended episode to {args.trajectory_bank}")
 
 
 if __name__ == "__main__":
