@@ -38,6 +38,8 @@ def build_model_metadata(
     judge_model: str,
     victim_adapter_path: str | Path | None = None,
     attacker_adapter_path: str | Path | None = None,
+    policy_type: str | None = None,
+    policy_checkpoint: str | Path | None = None,
     run_id: str | None = None,
     round_index: int | None = None,
     trajectory_source: str | None = None,
@@ -56,6 +58,10 @@ def build_model_metadata(
         "attacker_adapter_path": str(attacker_adapter_path) if attacker_adapter_path else None,
         "judge_model": judge_model,
     }
+    if policy_type is not None:
+        metadata["policy_type"] = policy_type
+    if policy_checkpoint is not None:
+        metadata["policy_checkpoint"] = str(policy_checkpoint)
     if round_index is not None:
         metadata["round_index"] = round_index
     if trajectory_source is not None:
@@ -79,6 +85,8 @@ def annotate_turn_metadata(
         "attacker_version",
         "attacker_adapter_path",
         "judge_model",
+        "policy_type",
+        "policy_checkpoint",
         "run_id",
         "round_index",
     )

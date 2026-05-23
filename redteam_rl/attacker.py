@@ -9,8 +9,13 @@ from redteam_rl.types import EpisodeState
 
 
 class AttackPolicy(Protocol):
-    def select_action(self, state: EpisodeState) -> AttackAction:
-        """Choose the next discrete strategy/action."""
+    def select_action(self, state: EpisodeState) -> object:
+        """Choose the next discrete strategy/action or return a Decision-like object.
+
+        Implementations may return either an `AttackAction` (legacy) or a richer
+        `Decision` object with attributes `action`, `log_prob`, `value`,
+        `action_probs`, and `attention_weights`.
+        """
 
 
 class MutatorLLM(Protocol):
@@ -31,13 +36,24 @@ class Attacker:
         self.mutator = mutator
 
     def act(self, state: EpisodeState) -> AttackStep:
-        action = self.policy.select_action(state)
+        decision = self.policy.select_action(state)
+        # Support legacy policies that return an AttackAction directly.
+        action = decision.action if hasattr(decision, "action") else decision
         prompt = self.mutator.mutate(action, state)
-        metadata = {}
+        metadata: dict[str, object] = {}
         if hasattr(self.mutator, "last_debug_prompt") and self.mutator.last_debug_prompt:
             metadata["mutator_input"] = self.mutator.last_debug_prompt
         if hasattr(self.mutator, "lora_adapter_path") and self.mutator.lora_adapter_path:
             metadata["attacker_adapter"] = str(self.mutator.lora_adapter_path)
+        # Policy metadata: attach any available fields from the decision object
+        if hasattr(decision, "action_probs") and getattr(decision, "action_probs") is not None:
+            metadata["policy_action_probs"] = getattr(decision, "action_probs")
+        if hasattr(decision, "log_prob") and getattr(decision, "log_prob") is not None:
+            metadata["policy_log_prob"] = float(getattr(decision, "log_prob"))
+        if hasattr(decision, "value") and getattr(decision, "value") is not None:
+            metadata["policy_value"] = float(getattr(decision, "value"))
+        if hasattr(decision, "attention_weights") and getattr(decision, "attention_weights") is not None:
+            metadata["policy_attention_weights"] = getattr(decision, "attention_weights")
         return AttackStep(action=action, prompt=prompt, metadata=metadata)
 
 

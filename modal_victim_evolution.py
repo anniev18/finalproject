@@ -29,7 +29,6 @@ image = (
     image=image,
     gpu="L40S",
     timeout=60 * 60 * 3,
-    secrets=[modal.Secret.from_name("huggingface-secret")],
     volumes={"/root/outputs": volume},
 )
 def run_victim_evolution_remote(

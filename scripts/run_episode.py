@@ -15,7 +15,7 @@ from redteam_rl.config import load_config
 from redteam_rl.env import RedTeamEnv
 from redteam_rl.logging import JsonlEpisodeLogger
 from redteam_rl.mutators import LLMMutator, TemplateMutator
-from redteam_rl.policy import RandomPolicy
+from redteam_rl.policy import RandomPolicy, TrailBlazerPolicy
 from redteam_rl.rewards import build_reward_model
 from redteam_rl.seed_prompts import sample_seed_prompt
 from redteam_rl.trajectory_bank import append_episode
@@ -50,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--show-mutator-input", action="store_true")
     parser.add_argument("--show-victim-input", action="store_true")
     parser.add_argument("--attacker-lora-adapter", type=str, default=None)
+    parser.add_argument("--policy-checkpoint", type=str, default=None)
     parser.add_argument(
         "--reward-backend",
         type=str,
@@ -63,6 +64,7 @@ def parse_args() -> argparse.Namespace:
         choices=["prompt_guard", "qwen_judge", "llama_guard"],
         help="Optional auxiliary scores to log without changing the main reward.",
     )
+    parser.add_argument("--wandb-project", type=str, default=None, help="Optional Weights & Biases project name to log to")
     return parser.parse_args()
 
 
@@ -80,11 +82,21 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
     run_id = new_run_id("local_episode")
+    # Optional Weights & Biases integration
+    wandb_run = None
+    if args.wandb_project:
+        try:
+            import wandb
+
+            wandb.init(project=args.wandb_project, name=run_id)
+            wandb_run = wandb
+        except Exception as e:
+            print(f"wandb init failed: {e}")
     seed_prompt = args.seed_prompt or sample_seed_prompt(args.seed_prompt_file, seed=args.seed)
     if args.attacker_lora_adapter and (args.dry_run or args.use_template_mutator):
         raise ValueError("--attacker-lora-adapter requires the LLM mutator.")
 
-    policy = RandomPolicy()
+    policy = TrailBlazerPolicy.from_checkpoint(args.policy_checkpoint) if args.policy_checkpoint else RandomPolicy()
     if args.dry_run or args.use_template_mutator:
         mutator = TemplateMutator()
     else:
@@ -159,6 +171,18 @@ def main() -> None:
         print(f"user: {turn.user_message}")
         print(f"victim: {turn.victim_response}")
         print()
+        # Log per-turn metrics to W&B if enabled
+        if wandb_run:
+            try:
+                metrics = {"turn": len(state.turns), "reward": float(reward)}
+                jl = None
+                if isinstance(turn.metadata, dict):
+                    jl = turn.metadata.get("judge_label")
+                if jl is not None:
+                    metrics["judge_label"] = jl
+                wandb_run.log(metrics, step=len(state.turns))
+            except Exception:
+                pass
 
     run_metadata = build_model_metadata(
         run_id=run_id,
@@ -166,6 +190,8 @@ def main() -> None:
         victim_adapter_path=None,
         attacker_model="template" if args.dry_run or args.use_template_mutator else cfg.models.mutator,
         attacker_adapter_path=args.attacker_lora_adapter,
+        policy_type="trailblazer" if args.policy_checkpoint else "random",
+        policy_checkpoint=args.policy_checkpoint,
         judge_model=_judge_model_name(cfg, reward_backend),
         extra={
             "config": args.config,
@@ -186,6 +212,8 @@ def main() -> None:
                 "attacker_version": run_metadata["attacker_version"],
                 "attacker_adapter_path": run_metadata["attacker_adapter_path"],
                 "judge_model": run_metadata["judge_model"],
+                "policy_type": run_metadata.get("policy_type"),
+                "policy_checkpoint": run_metadata.get("policy_checkpoint"),
             }
         )
 
@@ -201,6 +229,11 @@ def main() -> None:
             "source": "scripts/run_episode.py",
         },
     )
+    if wandb_run:
+        try:
+            wandb_run.finish()
+        except Exception:
+            pass
     print(f"logged episode to {args.log_file}")
     print(f"appended episode to {args.trajectory_bank}")
 

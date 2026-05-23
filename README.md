@@ -204,6 +204,37 @@ entrypoint:
 modal run modal_run_episode.py --big-gpu=true
 ```
 
+To train a TrailBlazer PPO checkpoint on Modal without using your local disk,
+run the lightweight dry-run trainer:
+
+```bash
+modal run modal_train_trailblazer.py \
+  --epochs=10 \
+  --episodes-per-batch=8 \
+  --max-turns=3 \
+  --wandb-project=my_wandb_project
+```
+
+The resulting checkpoints are written under
+`/root/outputs/policies/trailblazer_ppo` in the Modal volume
+`cs224r-redteam-rl-data`.
+
+To compare RandomPolicy against a trained TrailBlazer checkpoint on the same
+set of seeds, run the evaluation wrapper:
+
+```bash
+modal run modal_eval_trailblazer.py \
+  --trailblazer-checkpoint=/root/outputs/policies/trailblazer_ppo/checkpoint_epoch_9.pt \
+  --num-episodes=10 \
+  --max-turns=3 \
+  --reward-backend=fake \
+  --wandb-project=my_wandb_project
+```
+
+This returns summary metrics for both policies, including mean return,
+average turn count, success rate when judge labels are available, and queries
+per success.
+
 To manually run the mutator with an attacker LoRA adapter, point to an adapter
 path available in the runtime:
 

@@ -34,8 +34,8 @@ image = (
     image=image,
     gpu="L40S",
     timeout=60 * 60,
-    secrets=[modal.Secret.from_name("huggingface-secret")],
     volumes={"/root/outputs": volume},
+    secrets=[modal.Secret.from_name("wandb-secret")],
 )
 def run_episode_remote(
     seed_prompt: str | None = None,
@@ -50,9 +50,11 @@ def run_episode_remote(
     show_mutator_input: bool = False,
     show_victim_input: bool = False,
     attacker_lora_adapter: str | None = None,
+    policy_checkpoint: str | None = None,
     victim_lora_adapter: str | None = None,
     remote_output_dir: str = "/root/outputs/modal_episodes",
     remote_trajectory_bank: str = "/root/outputs/trajectory_bank/episodes.jsonl",
+    wandb_project: str | None = None,
 ) -> dict:
     return _run_episode_impl(
         seed_prompt=seed_prompt,
@@ -67,9 +69,11 @@ def run_episode_remote(
         show_mutator_input=show_mutator_input,
         show_victim_input=show_victim_input,
         attacker_lora_adapter=attacker_lora_adapter,
+        policy_checkpoint=policy_checkpoint,
         victim_lora_adapter=victim_lora_adapter,
         remote_output_dir=remote_output_dir,
         remote_trajectory_bank=remote_trajectory_bank,
+        wandb_project=wandb_project,
     )
 
 
@@ -86,9 +90,11 @@ def _run_episode_impl(
     show_mutator_input: bool,
     show_victim_input: bool,
     attacker_lora_adapter: str | None,
+    policy_checkpoint: str | None,
     victim_lora_adapter: str | None,
     remote_output_dir: str,
     remote_trajectory_bank: str,
+    wandb_project: str | None,
 ) -> dict:
     import sys
     from datetime import datetime
@@ -101,7 +107,7 @@ def _run_episode_impl(
     from redteam_rl.config import load_config
     from redteam_rl.env import RedTeamEnv
     from redteam_rl.mutators import LLMMutator, TemplateMutator
-    from redteam_rl.policy import RandomPolicy
+    from redteam_rl.policy import RandomPolicy, TrailBlazerPolicy
     from redteam_rl.rewards import build_reward_model
     from redteam_rl.seed_prompts import sample_seed_prompt
     from redteam_rl.versioning import annotate_turn_metadata, build_model_metadata, new_run_id
@@ -109,10 +115,21 @@ def _run_episode_impl(
 
     cfg = load_config(config_path)
     run_id = new_run_id("modal_episode")
+    # Optional Weights & Biases integration (best-effort: may not be installed in image)
+    wandb_run = None
+    if wandb_project or os.environ.get("WANDB_PROJECT"):
+        try:
+            import wandb
+
+            _proj = wandb_project or os.environ.get("WANDB_PROJECT")
+            wandb.init(project=_proj, name=run_id)
+            wandb_run = wandb
+        except Exception as e:
+            print(f"wandb init failed: {e}")
     if attacker_lora_adapter and use_template_mutator:
         raise ValueError("attacker_lora_adapter requires the default LLM mutator; remove --use-template-mutator.")
     selected_seed_prompt = seed_prompt or sample_seed_prompt(seed_prompt_file, seed=seed)
-    policy = RandomPolicy()
+    policy = TrailBlazerPolicy.from_checkpoint(policy_checkpoint) if policy_checkpoint else RandomPolicy()
     config_initial_attacker_adapter = cfg.attacker_evolution.get("initial_adapter_path")
     use_attacker_lora = attacker_lora_adapter is not None or config_initial_attacker_adapter is not None
     mutator = (
@@ -178,6 +195,19 @@ def _run_episode_impl(
     done = False
     while not done:
         state, _, done, _ = env.step()
+        # Log per-turn metrics to W&B if enabled
+        try:
+            if wandb_run:
+                turn = state.turns[-1]
+                metrics = {"turn": len(state.turns), "reward": float(turn.reward) if turn.reward is not None else None}
+                jl = None
+                if isinstance(turn.metadata, dict):
+                    jl = turn.metadata.get("judge_label")
+                if jl is not None:
+                    metrics["judge_label"] = jl
+                wandb_run.log(metrics, step=len(state.turns))
+        except Exception:
+            pass
 
     result = {
         "seed_prompt": state.seed_prompt,
@@ -198,6 +228,8 @@ def _run_episode_impl(
         victim_adapter_path=victim_lora_adapter,
         attacker_model="template" if use_template_mutator else cfg.models.mutator,
         attacker_adapter_path=attacker_lora_adapter or config_initial_attacker_adapter,
+        policy_type="trailblazer" if policy_checkpoint else "random",
+        policy_checkpoint=policy_checkpoint,
         judge_model=_judge_model_name(cfg, selected_reward_backend),
         extra={
             "config": config_path,
@@ -226,6 +258,11 @@ def _run_episode_impl(
         },
     )
     volume.commit()
+    if wandb_run:
+        try:
+            wandb_run.finish()
+        except Exception:
+            pass
     result["remote_artifacts"] = {
         "volume": "cs224r-redteam-rl-data",
         "episode_path": remote_episode_path,
@@ -292,7 +329,6 @@ def _judge_model_name(cfg, reward_backend: str) -> str:
     image=image,
     gpu="A100-80GB",
     timeout=60 * 60,
-    secrets=[modal.Secret.from_name("huggingface-secret")],
     volumes={"/root/outputs": volume},
 )
 def run_episode_llama_guard_remote(
@@ -344,7 +380,9 @@ def main(
     show_mutator_input: bool = False,
     show_victim_input: bool = False,
     attacker_lora_adapter: str | None = None,
+    policy_checkpoint: str | None = None,
     victim_lora_adapter: str | None = None,
+    wandb_project: str | None = None,
     output_dir: str = "outputs/modal_episodes",
     output_file: str | None = None,
     save_local: bool = False,
@@ -364,7 +402,9 @@ def main(
             show_mutator_input=show_mutator_input,
             show_victim_input=show_victim_input,
             attacker_lora_adapter=attacker_lora_adapter,
+            policy_checkpoint=policy_checkpoint,
             victim_lora_adapter=victim_lora_adapter,
+            wandb_project=wandb_project,
         )
     else:
         result = run_episode_remote.remote(
@@ -379,7 +419,9 @@ def main(
             show_mutator_input=show_mutator_input,
             show_victim_input=show_victim_input,
             attacker_lora_adapter=attacker_lora_adapter,
+            policy_checkpoint=policy_checkpoint,
             victim_lora_adapter=victim_lora_adapter,
+            wandb_project=wandb_project,
         )
     if save_local:
         output_path = _write_episode_result(result, output_dir=output_dir, output_file=output_file)

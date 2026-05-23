@@ -5,3 +5,5 @@ peft
 tqdm
 numpy
 vllm
+wandb
+

@@ -101,3 +101,41 @@ modal run modal_run_episode.py
 Default Modal run uses the Qwen victim, Qwen mutator, and Qwen safety judge. Use
 `--use-template-mutator` only for cheaper deterministic smoke tests. Use
 `--reward-backend=llama_guard` only when testing the heavier faithful judge.
+
+## Milestone Experiment
+
+For the project milestone, use Qwen for the real comparison runs and keep the
+smoke-test path separate.
+
+Use Qwen when you want a realistic end-to-end result:
+
+- victim: `Qwen/Qwen2.5-1.5B-Instruct`
+- mutator: `Qwen/Qwen2.5-1.5B-Instruct`
+- judge: `Qwen/Qwen2.5-1.5B-Instruct`
+
+Use `TemplateMutator` only for fast local wiring checks. It is not the final
+milestone result because it does not reflect the Qwen-based attack pipeline.
+
+Recommended milestone comparison:
+
+1. Baseline smoke test: local dry run with `--dry-run`.
+2. Real baseline: Modal episode run with the default Qwen victim/mutator/judge.
+3. Learned policy: Modal episode run with `--policy-checkpoint=/root/outputs/policies/trailblazer_ppo/checkpoint_epoch_9.pt`.
+
+Example commands:
+
+```bash
+python scripts/run_episode.py --dry-run
+modal run modal_run_episode.py --reward-backend=qwen_safety_judge
+modal run modal_run_episode.py --policy-checkpoint=/root/outputs/policies/trailblazer_ppo/checkpoint_epoch_9.pt
+```
+
+For the milestone writeup, report:
+
+- average episode reward
+- judge label distribution (`SAFE` vs `UNSAFE`)
+- one or two representative trajectories for each condition
+- whether the PPO checkpoint changes the action mix or attack style relative to the baseline
+
+Keep the comparison fixed on the same seed prompt set and the same `max_turns`
+so the conditions are directly comparable.
