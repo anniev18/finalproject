@@ -12,11 +12,14 @@ class HistoryView:
 
 
 class HistoryEncoder:
-    def encode(self, state: EpisodeState) -> HistoryView:
+    def encode(self, state: EpisodeState, history_weights: list[float] | None = None) -> HistoryView:
         if not state.turns:
             return HistoryView(text=state.seed_prompt, weights=[])
 
-        weights = self._reward_weighted_turns(state)
+        if history_weights is not None and len(history_weights) == len(state.turns):
+            weights = history_weights
+        else:
+            weights = self._reward_weighted_turns(state)
         lines: list[str] = []
         for turn in state.turns:
             lines.append(f"User: {turn.user_message}")
@@ -24,11 +27,18 @@ class HistoryEncoder:
             lines.append("")
         return HistoryView(text="\n".join(lines).strip(), weights=weights)
 
-    def encode_structured(self, state: EpisodeState) -> HistoryView:
+    def encode_structured(
+        self,
+        state: EpisodeState,
+        history_weights: list[float] | None = None,
+    ) -> HistoryView:
         if not state.turns:
             return HistoryView(text="No previous turns.", weights=[])
 
-        weights = self._reward_weighted_turns(state)
+        if history_weights is not None and len(history_weights) == len(state.turns):
+            weights = history_weights
+        else:
+            weights = self._reward_weighted_turns(state)
         lines: list[str] = []
         for index, (turn, weight) in enumerate(zip(state.turns, weights), start=1):
             action = turn.action.value if turn.action else "none"

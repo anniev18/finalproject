@@ -5,6 +5,7 @@ Runs a couple of calls and asserts that the returned Decision contains the
 expected fields and that attention weights sum to ~1.0.
 """
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +41,20 @@ def run_check() -> None:
     if d1.attention_weights:
         s = sum(d1.attention_weights)
         assert abs(s - 1.0) < 1e-3 or len(d1.attention_weights) == 1
+
+    stats = policy.evaluate_action(s1, 0)
+    assert "log_prob" in stats
+    assert "value" in stats
+    assert "action_probs" in stats
+    assert "attention_weights" in stats
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint_path = Path(tmpdir) / "trailblazer_smoke.pt"
+        policy.save_checkpoint(str(checkpoint_path))
+        loaded = TrailBlazerPolicy.from_checkpoint(str(checkpoint_path))
+        d2 = loaded.select_action(s1)
+        assert hasattr(d2, "action")
+        assert hasattr(d2, "attention_weights")
 
     print("test_smoke_trailblazer: ok")
 

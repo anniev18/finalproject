@@ -141,39 +141,21 @@ def train_trailblazer_remote(
         value_losses = []
         entropies = []
 
-        from redteam_rl.state_features import build_state_features
-
         for index, state in enumerate(all_states):
-            features = build_state_features(state, config=policy.cfg, include_embeddings=True)
-            q_embedding = torch.tensor(features.q_embedding, dtype=torch.float32, device=device).unsqueeze(0)
-            if features.history:
-                history_matrix = torch.tensor([turn.h_embedding for turn in features.history], dtype=torch.float32, device=device)
-            else:
-                history_matrix = torch.zeros((1, q_embedding.size(1)), dtype=torch.float32, device=device)
-
-            if policy._policy_net is None or policy._value_head is None:
-                policy._build_nets(total_in=q_embedding.size(1) + history_matrix.size(1))
-
-            attn_logits = torch.matmul(history_matrix, q_embedding.squeeze(0)) / (q_embedding.size(1) ** 0.5)
-            attn_weights = torch.nn.functional.softmax(attn_logits, dim=0)
-            attended_history = torch.matmul(attn_weights.unsqueeze(0), history_matrix).squeeze(0)
-            policy_input = torch.cat([q_embedding.squeeze(0), attended_history], dim=-1).unsqueeze(0)
-
-            logits = policy._policy_net(policy_input).squeeze(0)
+            logits, value, _ = policy.forward_from_state(state)
             probs = torch.nn.functional.softmax(logits, dim=-1)
             distribution = torch.distributions.Categorical(probs=probs)
 
             action = torch.tensor(all_actions[index], device=device)
             new_log_prob = distribution.log_prob(action)
             entropy = distribution.entropy()
-            value = policy._value_head(policy_input).squeeze(0)
 
             ratio = torch.exp(new_log_prob - torch.tensor(old_log_probs[index], device=device))
             advantage = advantages_tensor[index]
             surrogate_1 = ratio * advantage
             surrogate_2 = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * advantage
             policy_losses.append(-torch.min(surrogate_1, surrogate_2))
-            value_losses.append((returns_tensor[index] - value) ** 2)
+            value_losses.append((returns_tensor[index] - value.squeeze(0)) ** 2)
             entropies.append(entropy)
 
         loss = (
@@ -188,7 +170,7 @@ def train_trailblazer_remote(
     os.makedirs(save_dir, exist_ok=True)
     policy = TrailBlazerPolicy()
     policy.select_action(EpisodeState(seed_prompt="dummy"))
-    optimizer = optim.Adam(list(policy._policy_net.parameters()) + list(policy._value_head.parameters()), lr=lr)
+    optimizer = optim.Adam(policy.parameters(), lr=lr)
 
     wandb_run = None
     if wandb_project:

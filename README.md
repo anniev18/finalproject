@@ -76,6 +76,9 @@ modal setup
 Create a Modal secret named `huggingface-secret` with an `HF_TOKEN` value that
 has access to the configured Hugging Face models, especially Llama Guard.
 
+If you want W&B logging, also create a Modal secret named `wandb-secret` with
+your `WANDB_API_KEY`.
+
 Then run:
 
 ```bash
@@ -115,6 +118,10 @@ Each Modal episode also writes a sibling debug file:
 
 That file includes the full formatted `mutator_input` and `victim_input` in
 turn metadata.
+
+The compact episode file is the one to use for analysis and comparison.
+The `_full_inputs.json` file is the one to use when you want the exact prompt
+text that produced a turn.
 The trajectory bank stores the cleaned episode only and records source paths in
 bank metadata, including `episode_path` and `full_inputs_path`.
 Episode metadata also records model/version labels for filtering co-evolution
@@ -131,6 +138,10 @@ round_index, trajectory_source
 These labels are also copied into each turn's metadata. For example, after a
 victim LoRA update, later episodes should show `victim_version` like
 `victim_round_001` instead of `base`.
+
+Modal runs now also set `metadata.run_id`, and that ID is used as the W&B run
+name when `--wandb-project` is supplied. This makes it easy to match a W&B run
+back to the saved episode JSON.
 
 To also save a local snapshot for the HTML viewer:
 
@@ -172,6 +183,9 @@ To load Llama Guard for real reward scoring:
 ```bash
 modal run modal_run_episode.py --reward-backend=llama_guard
 ```
+
+The default Llama Guard config is tuned for Modal GPU startup and lives in
+`configs/default.json` under `reward.llama_guard`.
 
 Other reward backends:
 
@@ -241,6 +255,22 @@ path available in the runtime:
 ```bash
 modal run modal_run_episode.py \
   --attacker-lora-adapter=/path/to/adapter
+```
+
+To run the victim with a LoRA adapter, pass `--victim-lora-adapter` to the same
+entrypoint.
+
+To inspect the remote files that were just written, list the Modal volume with:
+
+```bash
+modal volume ls cs224r-redteam-rl-data modal_episodes
+```
+
+The newest episode files are the ones with the latest timestamps, for example:
+
+```text
+modal_episodes/episode_20260524_112542.json
+modal_episodes/episode_20260524_112542_full_inputs.json
 ```
 
 To override the number of prior chat turns shown to the victim:

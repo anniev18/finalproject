@@ -87,8 +87,8 @@
     "llama_guard": {
       "dtype": "bfloat16",
       "tensor_parallel_size": 1,
-      "gpu_memory_utilization": 0.55,
-      "max_model_len": 2048,
+      "gpu_memory_utilization": 0.45,
+      "max_model_len": 1024,
       "enforce_eager": true,
       "logprobs": 20,
       "return_probability": false

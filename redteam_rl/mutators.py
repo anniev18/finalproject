@@ -50,7 +50,13 @@ class MutatorConfig:
 class TemplateMutator:
     """Deterministic mutator useful for local debugging before wiring an LLM."""
 
-    def mutate(self, action: AttackAction, state: EpisodeState) -> str:
+    def mutate(
+        self,
+        action: AttackAction,
+        state: EpisodeState,
+        history_weights: list[float] | None = None,
+    ) -> str:
+        del history_weights
         prompt = state.current_prompt
         if action == AttackAction.REPHRASE:
             return f"Can you restate this request in a different way: {prompt}"
@@ -127,11 +133,26 @@ class LLMMutator:
             max_lora_rank=self.config.max_lora_rank,
         )
 
-    def mutate(self, action: AttackAction, state: EpisodeState) -> str:
-        return self.mutate_batch([(action, state)])[0]
+    def mutate(
+        self,
+        action: AttackAction,
+        state: EpisodeState,
+        history_weights: list[float] | None = None,
+    ) -> str:
+        return self.mutate_batch([(action, state, history_weights)])[0]
 
-    def mutate_batch(self, items: list[tuple[AttackAction, EpisodeState]]) -> list[str]:
-        prompts = [self._format_prompt(action, state) for action, state in items]
+    def mutate_batch(
+        self,
+        items: list[tuple[AttackAction, EpisodeState] | tuple[AttackAction, EpisodeState, list[float] | None]],
+    ) -> list[str]:
+        prompts = []
+        for item in items:
+            if len(item) == 2:
+                action, state = item
+                history_weights = None
+            else:
+                action, state, history_weights = item
+            prompts.append(self._format_prompt(action, state, history_weights=history_weights))
         self.last_debug_prompt = prompts[0] if self.capture_debug_prompt and prompts else None
         generate_kwargs = {"use_tqdm": False}
         if self.lora_adapter_path is not None:
@@ -160,8 +181,13 @@ class LLMMutator:
         if lora_id is not None:
             self.lora_id = lora_id
 
-    def _format_prompt(self, action: AttackAction, state: EpisodeState) -> str:
-        history = self.history_encoder.encode_structured(state)
+    def _format_prompt(
+        self,
+        action: AttackAction,
+        state: EpisodeState,
+        history_weights: list[float] | None = None,
+    ) -> str:
+        history = self.history_encoder.encode_structured(state, history_weights=history_weights)
         history_text = history.text[-self.config.max_history_chars :]
         action_instruction = ACTION_INSTRUCTIONS[action]
         turn_index = len(state.turns) + 1

@@ -123,38 +123,19 @@ def ppo_update(policy: TrailBlazerPolicy, batch, optimizer, clip_eps=0.2, value_
 
     # recompute log_probs and values under current policy
     for i, state in enumerate(all_states):
-        # build features via policy's state_features pipeline
-        from redteam_rl.state_features import build_state_features
-
-        features = build_state_features(state, config=policy.cfg, include_embeddings=True)
-        q_emb = torch.tensor(features.q_embedding, dtype=torch.float32, device=device).unsqueeze(0)
-        if features.history:
-            h_mat = torch.tensor([t.h_embedding for t in features.history], dtype=torch.float32, device=device)
-        else:
-            h_mat = torch.zeros((1, q_emb.size(1)), dtype=torch.float32, device=device)
-
-        # ensure nets built
-        if policy._policy_net is None or policy._value_head is None:
-            policy._build_nets(total_in=q_emb.size(1) + h_mat.size(1))
-
-        attn_logits = torch.matmul(h_mat, q_emb.squeeze(0)) / (q_emb.size(1) ** 0.5)
-        attn_weights = torch.nn.functional.softmax(attn_logits, dim=0)
-        attended = torch.matmul(attn_weights.unsqueeze(0), h_mat).squeeze(0)
-        policy_in = torch.cat([q_emb.squeeze(0), attended], dim=-1).unsqueeze(0)
-        logits = policy._policy_net(policy_in).squeeze(0)
+        logits, value, _ = policy.forward_from_state(state)
         probs = torch.nn.functional.softmax(logits, dim=-1)
         dist = torch.distributions.Categorical(probs=probs)
         action = torch.tensor(all_actions[i], device=device)
         new_log_prob = dist.log_prob(action)
         entropy = dist.entropy()
-        value = policy._value_head(policy_in).squeeze(0)
 
         ratio = torch.exp(new_log_prob - torch.tensor(old_log_probs[i], device=device))
         A = advantages[i]
         surr1 = ratio * A
         surr2 = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * A
         policy_loss = -torch.min(surr1, surr2)
-        value_loss = (returns[i] - value) ** 2
+        value_loss = (returns[i] - value.squeeze(0)) ** 2
         policy_losses.append(policy_loss)
         value_losses.append(value_loss)
         entropies.append(entropy)
@@ -173,8 +154,7 @@ def main():
     dummy_state = EpisodeState(seed_prompt="dummy")
     policy.select_action(dummy_state)
 
-    params = list(policy._policy_net.parameters()) + list(policy._value_head.parameters())
-    optimizer = optim.Adam(params, lr=args.lr)
+    optimizer = optim.Adam(policy.parameters(), lr=args.lr)
 
     mutator = TemplateMutator()
     victim = FakeVictim()

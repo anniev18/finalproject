@@ -35,7 +35,7 @@ image = (
     gpu="L40S",
     timeout=60 * 60,
     volumes={"/root/outputs": volume},
-    secrets=[modal.Secret.from_name("wandb-secret")],
+    secrets=[modal.Secret.from_name("wandb-secret"), modal.Secret.from_name("huggingface-secret")],
 )
 def run_episode_remote(
     seed_prompt: str | None = None,
@@ -122,8 +122,10 @@ def _run_episode_impl(
             import wandb
 
             _proj = wandb_project or os.environ.get("WANDB_PROJECT")
-            wandb.init(project=_proj, name=run_id)
-            wandb_run = wandb
+            wandb_run = wandb.init(project=_proj, name=run_id)
+            wandb.define_metric("turn")
+            wandb.define_metric("reward", step_metric="turn")
+            wandb.define_metric("judge_label", step_metric="turn")
         except Exception as e:
             print(f"wandb init failed: {e}")
     if attacker_lora_adapter and use_template_mutator:
@@ -330,6 +332,7 @@ def _judge_model_name(cfg, reward_backend: str) -> str:
     gpu="A100-80GB",
     timeout=60 * 60,
     volumes={"/root/outputs": volume},
+    secrets=[modal.Secret.from_name("wandb-secret"), modal.Secret.from_name("huggingface-secret")],
 )
 def run_episode_llama_guard_remote(
     seed_prompt: str | None = None,
@@ -343,9 +346,11 @@ def run_episode_llama_guard_remote(
     show_mutator_input: bool = False,
     show_victim_input: bool = False,
     attacker_lora_adapter: str | None = None,
+    policy_checkpoint: str | None = None,
     victim_lora_adapter: str | None = None,
     remote_output_dir: str = "/root/outputs/modal_episodes",
     remote_trajectory_bank: str = "/root/outputs/trajectory_bank/episodes.jsonl",
+    wandb_project: str | None = None,
 ) -> dict:
     return _run_episode_impl(
         seed_prompt=seed_prompt,
@@ -360,9 +365,11 @@ def run_episode_llama_guard_remote(
         show_mutator_input=show_mutator_input,
         show_victim_input=show_victim_input,
         attacker_lora_adapter=attacker_lora_adapter,
+        policy_checkpoint=policy_checkpoint,
         victim_lora_adapter=victim_lora_adapter,
         remote_output_dir=remote_output_dir,
         remote_trajectory_bank=remote_trajectory_bank,
+        wandb_project=wandb_project,
     )
 
 
