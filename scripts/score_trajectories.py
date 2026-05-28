@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
         "--reward-backend",
         type=str,
         default="llama_guard",
-        choices=["prompt_guard", "qwen_judge", "llama_guard"],
+        choices=["prompt_guard", "qwen_judge", "llama_guard", "wildguard"],
     )
     return parser.parse_args()
 
@@ -38,6 +38,7 @@ def main() -> None:
         prompt_guard_config=cfg.prompt_guard_config(),
         qwen_judge_config=cfg.qwen_judge_config(),
         llama_guard_config=cfg.llama_guard_config(),
+        wildguard_config=cfg.wildguard_config(),
     )
 
     input_path = Path(args.input)

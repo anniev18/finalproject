@@ -10,7 +10,7 @@ from redteam_rl.attacker_training import AttackerFineTuneConfig
 from redteam_rl.mutators import MutatorConfig
 from redteam_rl.env import EnvConfig
 from redteam_rl.orchestration import VictimEvolutionConfig
-from redteam_rl.rewards import LlamaGuardConfig, PromptGuardConfig, QwenJudgeConfig, RewardBackend
+from redteam_rl.rewards import LlamaGuardConfig, PromptGuardConfig, QwenJudgeConfig, RewardBackend, WildGuardConfig
 from redteam_rl.state_features import StateFeatureConfig
 from redteam_rl.victim_training import VictimFineTuneConfig
 from redteam_rl.victims import VictimConfig
@@ -27,6 +27,7 @@ class ModelNames:
     embedding: str = "sentence-transformers/all-MiniLM-L6-v2"
     prompt_guard: str = "meta-llama/Llama-Prompt-Guard-2-86M"
     llama_guard: str = "meta-llama/Meta-Llama-Guard-2-8B"
+    wildguard: str = "allenai/wildguard"
 
 
 @dataclass(frozen=True)
@@ -140,6 +141,15 @@ class ProjectConfig:
             **overrides,
         }
         return LlamaGuardConfig(**values)
+
+    def wildguard_config(self, **overrides: Any) -> WildGuardConfig:
+        wildguard_values = dict(self.reward.get("wildguard", {}))
+        values = {
+            "model_name": self.models.wildguard,
+            **wildguard_values,
+            **overrides,
+        }
+        return WildGuardConfig(**values)
 
     def victim_finetune_config(self, output_dir: str | Path | None = None, **overrides: Any) -> VictimFineTuneConfig:
         values = {

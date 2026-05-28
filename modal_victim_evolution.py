@@ -89,6 +89,7 @@ def run_victim_evolution_remote(
         prompt_guard_config=cfg.prompt_guard_config(),
         qwen_judge_config=cfg.qwen_judge_config(),
         llama_guard_config=cfg.llama_guard_config(),
+        wildguard_config=cfg.wildguard_config(),
     )
     env = RedTeamEnv(
         config=cfg.env_config(**({"max_turns": max_turns} if max_turns else {})),
@@ -183,4 +184,6 @@ def _judge_model_name(cfg, reward_backend: str) -> str:
         return cfg.models.prompt_guard
     if reward_backend == "llama_guard":
         return cfg.models.llama_guard
+    if reward_backend == "wildguard":
+        return cfg.models.wildguard
     return "fake"

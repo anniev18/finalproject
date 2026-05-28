@@ -167,6 +167,7 @@ def _run_episode_impl(
         prompt_guard_config=cfg.prompt_guard_config(),
         qwen_judge_config=cfg.qwen_judge_config(),
         llama_guard_config=cfg.llama_guard_config(),
+        wildguard_config=cfg.wildguard_config(),
     )
     auxiliary_reward_models = {
         backend: build_reward_model(
@@ -174,6 +175,7 @@ def _run_episode_impl(
             prompt_guard_config=cfg.prompt_guard_config(),
             qwen_judge_config=cfg.qwen_judge_config(),
             llama_guard_config=cfg.llama_guard_config(),
+            wildguard_config=cfg.wildguard_config(),
         )
         for backend in (aux_reward_backends or [])
     }
@@ -324,6 +326,8 @@ def _judge_model_name(cfg, reward_backend: str) -> str:
         return cfg.models.prompt_guard
     if reward_backend == "llama_guard":
         return cfg.models.llama_guard
+    if reward_backend == "wildguard":
+        return cfg.models.wildguard
     return "fake"
 
 

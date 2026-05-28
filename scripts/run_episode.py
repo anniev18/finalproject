@@ -55,13 +55,13 @@ def parse_args() -> argparse.Namespace:
         "--reward-backend",
         type=str,
         default=None,
-        choices=["fake", "prompt_guard", "qwen_judge", "qwen_safety_judge", "llama_guard"],
+        choices=["fake", "prompt_guard", "qwen_judge", "qwen_safety_judge", "llama_guard", "wildguard"],
     )
     parser.add_argument(
         "--aux-reward-backend",
         action="append",
         default=[],
-        choices=["prompt_guard", "qwen_judge", "llama_guard"],
+        choices=["prompt_guard", "qwen_judge", "llama_guard", "wildguard"],
         help="Optional auxiliary scores to log without changing the main reward.",
     )
     parser.add_argument("--wandb-project", type=str, default=None, help="Optional Weights & Biases project name to log to")
@@ -75,6 +75,8 @@ def _judge_model_name(cfg, reward_backend: str) -> str:
         return cfg.models.prompt_guard
     if reward_backend == "llama_guard":
         return cfg.models.llama_guard
+    if reward_backend == "wildguard":
+        return cfg.models.wildguard
     return "fake"
 
 
@@ -135,6 +137,7 @@ def main() -> None:
             prompt_guard_config=cfg.prompt_guard_config(),
             qwen_judge_config=cfg.qwen_judge_config(),
             llama_guard_config=cfg.llama_guard_config(),
+            wildguard_config=cfg.wildguard_config(),
         )
     auxiliary_reward_models = {
         backend: build_reward_model(
@@ -142,6 +145,7 @@ def main() -> None:
             prompt_guard_config=cfg.prompt_guard_config(),
             qwen_judge_config=cfg.qwen_judge_config(),
             llama_guard_config=cfg.llama_guard_config(),
+            wildguard_config=cfg.wildguard_config(),
         )
         for backend in args.aux_reward_backend
     }

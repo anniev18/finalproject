@@ -5,7 +5,8 @@
     "qwen_safety_judge": "Qwen/Qwen2.5-1.5B-Instruct",
     "embedding": "sentence-transformers/all-MiniLM-L6-v2",
     "prompt_guard": "meta-llama/Llama-Prompt-Guard-2-86M",
-    "llama_guard": "meta-llama/Meta-Llama-Guard-2-8B"
+    "llama_guard": "meta-llama/Meta-Llama-Guard-2-8B",
+    "wildguard": "allenai/wildguard"
   },
   "environment": {
     "max_turns": 5,
@@ -92,6 +93,18 @@
       "enforce_eager": true,
       "logprobs": 20,
       "return_probability": false
+    },
+    "wildguard": {
+      "dtype": "bfloat16",
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "max_tokens": 32,
+      "max_model_len": 2048,
+      "tensor_parallel_size": 1,
+      "gpu_memory_utilization": 0.35,
+      "enforce_eager": true,
+      "unsafe_reward": 1.0,
+      "safe_reward": 0.0
     }
   },
   "victim_training": {
