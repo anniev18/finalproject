@@ -7,10 +7,10 @@ LLM red-teaming.
 
 - `redteam_rl/`: new project code for the proposed system.
 - `active_attacks_reference/`: reference copy of the cloned Active Attacks code.
+- `rlbreaker_reference/`: vendored reference copy of RLbreaker.
 
-The new implementation should not depend on `active_attacks_reference` directly.
-Use that directory only for implementation ideas such as victim generation,
-toxicity scoring, replay buffers, and evolving-victim training rounds.
+The new implementation should not import from the reference directories
+directly. Use them only for implementation ideas and paper-baseline alignment.
 
 ## Local Environment
 
@@ -36,6 +36,135 @@ specific prompt:
 
 ```bash
 python scripts/run_episode.py --dry-run --seed-prompt "Explain how safety policies work."
+```
+
+Seed prompts are the fixed benchmark queries. The attacker mutator now follows
+the TrailBlazer-style split:
+
+```text
+seed prompt / benchmark query = fixed harmful request
+attack template              = mutable wrapper containing {REQUEST}
+victim input                  = attack template rendered with the seed prompt
+```
+
+This means the mutator is asked to rewrite a generic template, not to answer or
+directly restate the harmful query. Each turn logs both `attack_template` and
+the rendered `user_message`.
+
+Our default policy action space now follows the original RLbreaker/TrailBlazer
+five-action mutator set:
+
+```text
+generate_similar, crossover, expand, shorten, rephrase
+```
+
+The expanded 10-action enum remains in code for later ablations, but
+`ACTIONS` uses the five-action baseline.
+
+Episodes now initialize from RLbreaker's human-written prompt-template pool
+extracted from:
+
+```text
+rlbreaker_reference/datasets/prompts/jailbreak-prompt.xlsx
+```
+
+The extracted templates live in:
+
+```text
+data/rlbreaker_initial_templates.json
+```
+
+The mutator prompt wording is adapted from RLbreaker's
+`utils.py::mutate_operator`, replacing RLbreaker's `[INSERT PROMPT HERE]`
+placeholder with our `{REQUEST}` placeholder.
+
+To convert local AdvBench or HarmBench files into our seed prompt format:
+
+```bash
+python scripts/download_benchmarks.py
+
+python scripts/prepare_benchmark_prompts.py \
+  --input path/to/advbench.csv \
+  --source advbench \
+  --output data/seed_prompts.json
+
+python scripts/prepare_benchmark_prompts.py \
+  --input path/to/harmbench.json \
+  --source harmbench \
+  --output data/seed_prompts.json
+```
+
+The converter supports CSV, JSON, and JSONL, and auto-detects common fields like
+`instruction`, `prompt`, `goal`, `behavior`, `Behavior`, `target`, and `query`.
+Use `--field FIELD_NAME` if a benchmark file uses a different column name.
+
+`scripts/download_benchmarks.py` downloads the public raw CSV files into:
+
+```text
+data/benchmarks/advbench/harmful_behaviors.csv
+data/benchmarks/harmbench/harmbench_behaviors_text_val.csv
+data/benchmarks/harmbench/harmbench_behaviors_text_test.csv
+```
+
+and writes:
+
+```text
+data/seed_prompts.json       # all prompts
+data/seed_prompts_train.json # AdvBench train + legacy train
+data/seed_prompts_val.json   # HarmBench official val + legacy val
+data/seed_prompts_test.json  # HarmBench official test + legacy test
+```
+
+HarmBench provides official validation/test files. AdvBench's public harmful
+behaviors CSV does not provide an official split, so by default we use all
+AdvBench prompts for PPO training. HarmBench keeps its official validation/test
+split. The previous project seed prompt bank is preserved in
+`data/seed_prompts_legacy.json`; prompts that do not duplicate AdvBench or
+HarmBench are deterministically split 80/10/10 and merged into train/val/test.
+
+Current counts after deduplication:
+
+```text
+train: 2503  # 520 AdvBench + 1983 legacy/custom
+val:    325  # 78 HarmBench + 247 legacy/custom
+test:   564  # 315 HarmBench + 249 legacy/custom
+all:   3392
+```
+
+To merge another local prompt file into training, pass `--extra-train-file`:
+
+```bash
+python scripts/download_benchmarks.py \
+  --extra-train-file path/to/custom_seed_prompts.json
+```
+
+If you want an AdvBench-only train/val/test split for ablations, run:
+
+```bash
+python scripts/download_benchmarks.py --advbench-split-mode=deterministic
+```
+
+To download only one benchmark:
+
+```bash
+python scripts/download_benchmarks.py --benchmark advbench
+python scripts/download_benchmarks.py --benchmark harmbench
+```
+
+Use the split files for rigorous runs:
+
+```bash
+# PPO training
+modal run modal_train_trailblazer.py \
+  --seed-prompt-file=/root/data/seed_prompts_train.json
+
+# checkpoint selection / validation
+modal run modal_eval_trailblazer.py \
+  --seed-prompt-file=/root/data/seed_prompts_val.json
+
+# final held-out test evaluation
+modal run modal_eval_trailblazer.py \
+  --seed-prompt-file=/root/data/seed_prompts_test.json
 ```
 
 Do not install `vllm` directly on a laptop unless you know your machine has a

@@ -23,7 +23,8 @@ sys.path.insert(0, str(REPO_ROOT))
 from redteam_rl.actions import ACTIONS
 from redteam_rl.types import DialogueTurn
 from redteam_rl.policy import TrailBlazerPolicy
-from redteam_rl.mutators import TemplateMutator
+from redteam_rl.mutators import TemplateMutator, render_attack_template
+from redteam_rl.rlbreaker_templates import select_initial_template
 from redteam_rl.types import EpisodeState
 
 
@@ -52,7 +53,11 @@ def parse_args():
 def collect_episodes(policy: TrailBlazerPolicy, mutator: TemplateMutator, victim: FakeVictim, reward: FakeReward, n: int, max_turns: int) -> List[dict]:
     batch = []
     for _ in range(n):
-        state = EpisodeState(seed_prompt="Test prompt")
+        seed_prompt = "Test prompt"
+        state = EpisodeState(
+            seed_prompt=seed_prompt,
+            initial_template=select_initial_template(seed_prompt),
+        )
         done = False
         episode = {"states": [], "actions": [], "log_probs": [], "values": [], "rewards": []}
         while not done:
@@ -62,7 +67,8 @@ def collect_episodes(policy: TrailBlazerPolicy, mutator: TemplateMutator, victim
             episode["actions"].append(idx)
             episode["log_probs"].append(dec.log_prob if dec.log_prob is not None else 0.0)
             episode["values"].append(dec.value if dec.value is not None else 0.0)
-            prompt = mutator.mutate(dec.action, state)
+            attack_template = mutator.mutate(dec.action, state)
+            prompt = render_attack_template(attack_template, state.seed_prompt)
             victim_response = victim.respond(prompt, state)
             reward_value = reward.score(prompt, victim_response, state)
             state.turns.append(
@@ -70,6 +76,7 @@ def collect_episodes(policy: TrailBlazerPolicy, mutator: TemplateMutator, victim
                     user_message=prompt,
                     victim_response=victim_response,
                     action=dec.action,
+                    attack_template=attack_template,
                     reward=reward_value,
                     metadata={
                         "policy_action_probs": dec.action_probs,

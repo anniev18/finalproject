@@ -103,6 +103,8 @@ def load_records(
 def episode_from_record(record: dict[str, Any]) -> EpisodeState:
     raw_episode = record.get("episode", record)
     state = EpisodeState(seed_prompt=str(raw_episode["seed_prompt"]))
+    if raw_episode.get("initial_template"):
+        state.initial_template = str(raw_episode["initial_template"])
     for raw_turn in raw_episode.get("turns", []):
         action = raw_turn.get("action")
         state.turns.append(
@@ -110,6 +112,8 @@ def episode_from_record(record: dict[str, Any]) -> EpisodeState:
                 user_message=str(raw_turn.get("user_message", "")),
                 victim_response=str(raw_turn.get("victim_response", "")),
                 action=AttackAction(action) if action else None,
+                attack_template=raw_turn.get("attack_template")
+                or raw_turn.get("metadata", {}).get("attack_template"),
                 reward=raw_turn.get("reward"),
                 metadata=dict(raw_turn.get("metadata", {})),
             )

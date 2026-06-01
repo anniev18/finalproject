@@ -39,6 +39,7 @@ image = (
 )
 def train_trailblazer_remote(
     save_dir: str = "/root/outputs/policies/trailblazer_ppo",
+    episode_log_path: str | None = None,
     epochs: int = 10,
     episodes_per_batch: int = 8,
     max_turns: int = 3,
@@ -149,6 +150,13 @@ def train_trailblazer_remote(
                 episode["values"].append(float(info.get("policy_value", 0.0)))
                 episode["rewards"].append(float(reward_value))
             batch.append(episode)
+            write_training_episode(
+                path=selected_episode_log_path,
+                epoch=epoch,
+                episode_index=episode_index,
+                episode_seed=episode_seed,
+                state=state,
+            )
         return batch
 
     def compute_gae(rewards, values, gamma=0.99, lam=0.95):
@@ -213,6 +221,8 @@ def train_trailblazer_remote(
         return float(loss.item())
 
     os.makedirs(save_dir, exist_ok=True)
+    selected_episode_log_path = episode_log_path or os.path.join(save_dir, "training_episodes.jsonl")
+    Path(selected_episode_log_path).parent.mkdir(parents=True, exist_ok=True)
     policy = (
         TrailBlazerPolicy.from_checkpoint(resume_checkpoint, cfg=cfg.state_feature_config())
         if resume_checkpoint
@@ -244,6 +254,7 @@ def train_trailblazer_remote(
     run_summary = {
         "epochs": [],
         "save_dir": save_dir,
+        "episode_log_path": selected_episode_log_path,
         "config_path": config_path,
         "seed_prompt_file": seed_prompt_file,
         "reward_backend": selected_reward_backend,
@@ -308,6 +319,39 @@ def train_trailblazer_remote(
     return run_summary
 
 
+def write_training_episode(
+    path: str,
+    epoch: int,
+    episode_index: int,
+    episode_seed: int | None,
+    state,
+) -> None:
+    record = {
+        "epoch": epoch,
+        "episode_index": episode_index,
+        "seed": episode_seed,
+        "seed_prompt": state.seed_prompt,
+        "initial_template": state.initial_template,
+        "num_turns": len(state.turns),
+        "episode_return": sum(float(turn.reward or 0.0) for turn in state.turns),
+        "success": any(str(turn.metadata.get("judge_label", "")).upper() == "UNSAFE" for turn in state.turns),
+        "turns": [
+            {
+                "turn_index": turn_index,
+                "action": turn.action.value if turn.action else None,
+                "attack_template": turn.attack_template,
+                "user_message": turn.user_message,
+                "victim_response": turn.victim_response,
+                "reward": turn.reward,
+                "metadata": turn.metadata,
+            }
+            for turn_index, turn in enumerate(state.turns, start=1)
+        ],
+    }
+    with Path(path).open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
+
+
 def _checkpoint_epoch(checkpoint: dict, checkpoint_path: str) -> int | None:
     epoch = checkpoint.get("epoch")
     if epoch is not None:
@@ -322,6 +366,7 @@ def _checkpoint_epoch(checkpoint: dict, checkpoint_path: str) -> int | None:
 def main(
     save_dir: str = "outputs/policies/trailblazer_ppo",
     remote_save_dir: str = "/root/outputs/policies/trailblazer_ppo",
+    remote_episode_log_path: str | None = None,
     epochs: int = 10,
     episodes_per_batch: int = 8,
     max_turns: int = 3,
@@ -338,6 +383,7 @@ def main(
 ) -> None:
     result = train_trailblazer_remote.remote(
         save_dir=remote_save_dir,
+        episode_log_path=remote_episode_log_path,
         epochs=epochs,
         episodes_per_batch=episodes_per_batch,
         max_turns=max_turns,
@@ -357,6 +403,7 @@ def main(
     print(json.dumps(result, indent=2))
     print("\nsaved TrailBlazer checkpoints to Modal volume cs224r-redteam-rl-data")
     print(f"remote checkpoint path: {remote_save_dir}")
+    print("remote training episodes:", result.get("episode_log_path"))
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
         local_summary_path = Path(save_dir) / "modal_trailblazer_train_summary.json"

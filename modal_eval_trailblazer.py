@@ -184,6 +184,7 @@ def evaluate_trailblazer_remote(
                 "policy": policy_name,
                 "seed": episode_seed,
                 "seed_prompt": state.seed_prompt,
+                "initial_template": state.initial_template,
                 "num_turns": len(turns),
                 "episode_return": sum(rewards),
                 "success": success,
@@ -191,6 +192,7 @@ def evaluate_trailblazer_remote(
                 "turns": [
                     {
                         "action": turn.action.value if turn.action else None,
+                        "attack_template": turn.attack_template,
                         "reward": turn.reward,
                         "judge_label": turn.metadata.get("judge_label"),
                         "user_message": turn.user_message,

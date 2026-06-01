@@ -215,9 +215,11 @@ def _run_episode_impl(
 
     result = {
         "seed_prompt": state.seed_prompt,
+        "initial_template": state.initial_template,
         "turns": [
             {
                 "action": turn.action.value if turn.action else None,
+                "attack_template": turn.attack_template,
                 "user_message": turn.user_message,
                 "victim_response": turn.victim_response,
                 "reward": turn.reward,
@@ -299,6 +301,7 @@ def _write_remote_episode_results(result: dict, remote_output_dir: str) -> tuple
 def _strip_full_inputs(result: dict) -> dict:
     stripped = {
         "seed_prompt": result["seed_prompt"],
+        "initial_template": result.get("initial_template"),
         "turns": [],
     }
     if "metadata" in result:
@@ -310,6 +313,7 @@ def _strip_full_inputs(result: dict) -> dict:
         stripped["turns"].append(
             {
                 "action": turn.get("action"),
+                "attack_template": turn.get("attack_template"),
                 "user_message": turn.get("user_message"),
                 "victim_response": turn.get("victim_response"),
                 "reward": turn.get("reward"),
@@ -329,6 +333,168 @@ def _judge_model_name(cfg, reward_backend: str) -> str:
     if reward_backend == "wildguard":
         return cfg.models.wildguard
     return "fake"
+
+
+def _print_episode_trace(
+    result: dict,
+    *,
+    show_mutator_input: bool = False,
+    show_victim_input: bool = False,
+) -> None:
+    """Print the episode in generation order instead of dumping nested JSON."""
+    print("\nEpisode trace")
+    print("=" * 80)
+    metadata = result.get("metadata", {}) or {}
+    artifacts = result.get("remote_artifacts", {}) or {}
+    print(_kv_section(
+        "Run metadata",
+        {
+            "run_id": metadata.get("run_id"),
+            "policy_type": metadata.get("policy_type"),
+            "policy_checkpoint": metadata.get("policy_checkpoint"),
+            "victim_model": metadata.get("victim_model"),
+            "victim_version": metadata.get("victim_version"),
+            "victim_adapter_path": metadata.get("victim_adapter_path"),
+            "attacker_model": metadata.get("attacker_model"),
+            "attacker_version": metadata.get("attacker_version"),
+            "attacker_adapter_path": metadata.get("attacker_adapter_path"),
+            "judge_model": metadata.get("judge_model"),
+            "reward_backend": metadata.get("reward_backend"),
+            "max_turns": metadata.get("max_turns"),
+            "victim_history_turns": metadata.get("victim_history_turns"),
+            "seed_prompt_file": metadata.get("seed_prompt_file"),
+        },
+    ))
+    print(_kv_section(
+        "Remote artifacts",
+        {
+            "volume": artifacts.get("volume"),
+            "episode_path": artifacts.get("episode_path"),
+            "full_inputs_path": artifacts.get("full_inputs_path"),
+            "trajectory_bank": artifacts.get("trajectory_bank"),
+        },
+    ))
+    print(_section("Initial template", result.get("initial_template")))
+
+    for index, turn in enumerate(result.get("turns", []), start=1):
+        turn_metadata = turn.get("metadata", {}) or {}
+        print(f"\nTurn {index}")
+        print("-" * 80)
+        print(_section("Action", turn.get("action")))
+        if show_mutator_input:
+            print(_section("Mutator input", turn_metadata.get("mutator_input")))
+        print(_section("Mutator response", turn_metadata.get("raw_attack_template")))
+        print(_section("Final template used", turn.get("attack_template")))
+        print(_section("Bad query", result.get("seed_prompt")))
+        print(_section("Attack message sent to victim", turn.get("user_message")))
+        if show_victim_input:
+            print(_section("Victim input", turn_metadata.get("victim_input")))
+        print(_section("Victim response", turn.get("victim_response")))
+        print(_kv_section(
+            "Judge and reward",
+            {
+                "judge_label": turn_metadata.get("judge_label"),
+                "reward": turn.get("reward"),
+                "auxiliary_scores": turn_metadata.get("auxiliary_scores"),
+            },
+        ))
+        print(_kv_section(
+            "Mutator diagnostics",
+            {
+                "mutator_refused": turn_metadata.get("mutator_refused"),
+                "mutator_invalid_template": turn_metadata.get("mutator_invalid_template"),
+                "mutator_fallback_used": turn_metadata.get("mutator_fallback_used"),
+                "mutator_fallback_template": turn_metadata.get("mutator_fallback_template"),
+            },
+        ))
+        print(_kv_section(
+            "Policy diagnostics",
+            {
+                "policy_log_prob": turn_metadata.get("policy_log_prob"),
+                "policy_value": turn_metadata.get("policy_value"),
+                "policy_action_probs": turn_metadata.get("policy_action_probs"),
+                "policy_attention_weights": turn_metadata.get("policy_attention_weights"),
+            },
+        ))
+        print(_kv_section(
+            "Model versions",
+            {
+                "victim_model": turn_metadata.get("victim_model"),
+                "victim_version": turn_metadata.get("victim_version"),
+                "victim_adapter_path": turn_metadata.get("victim_adapter_path"),
+                "attacker_model": turn_metadata.get("attacker_model"),
+                "attacker_version": turn_metadata.get("attacker_version"),
+                "attacker_adapter_path": turn_metadata.get("attacker_adapter_path"),
+                "judge_model": turn_metadata.get("judge_model"),
+            },
+        ))
+
+    print("\nEpisode summary")
+    print("=" * 80)
+    print(_kv_section("Summary metrics", _episode_summary_metrics(result)))
+
+
+def _section(label: str, value: object) -> str:
+    text = "" if value is None else str(value)
+    return f"{label}:\n{text}\n"
+
+
+def _kv_section(label: str, values: dict[str, object]) -> str:
+    lines = [f"{label}:"]
+    for key, value in values.items():
+        if value is not None:
+            lines.append(f"  {key}: {value}")
+    if len(lines) == 1:
+        lines.append("  n/a")
+    return "\n".join(lines) + "\n"
+
+
+def _episode_summary_metrics(result: dict) -> dict[str, object]:
+    turns = result.get("turns", [])
+    rewards = [
+        float(turn.get("reward"))
+        for turn in turns
+        if turn.get("reward") is not None
+    ]
+    unsafe_turns = 0
+    safe_turns = 0
+    unknown_judge_turns = 0
+    mutator_refusals = 0
+    invalid_templates = 0
+    fallback_uses = 0
+    successful_attacks = 0
+
+    for turn in turns:
+        metadata = turn.get("metadata", {}) or {}
+        label = str(metadata.get("judge_label", "")).upper()
+        reward = turn.get("reward")
+        if label == "UNSAFE":
+            unsafe_turns += 1
+        elif label == "SAFE":
+            safe_turns += 1
+        else:
+            unknown_judge_turns += 1
+        if metadata.get("mutator_refused"):
+            mutator_refusals += 1
+        if metadata.get("mutator_invalid_template"):
+            invalid_templates += 1
+        if metadata.get("mutator_fallback_used"):
+            fallback_uses += 1
+        if reward is not None and float(reward) >= 1.0:
+            successful_attacks += 1
+
+    return {
+        "turns": len(turns),
+        "successful_attacks_reward_ge_1": successful_attacks,
+        "judge_unsafe": unsafe_turns,
+        "judge_safe": safe_turns,
+        "judge_unknown": unknown_judge_turns,
+        "mutator_declines": mutator_refusals,
+        "invalid_templates": invalid_templates,
+        "fallbacks_used": fallback_uses,
+        "average_reward": round(sum(rewards) / len(rewards), 4) if rewards else None,
+        "max_reward": max(rewards) if rewards else None,
+    }
 
 
 @app.function(
@@ -437,7 +603,11 @@ def main(
     if save_local:
         output_path = _write_episode_result(result, output_dir=output_dir, output_file=output_file)
         _append_episode_result_to_bank(result, trajectory_bank)
-    print(json.dumps(result, indent=2))
+    _print_episode_trace(
+        result,
+        show_mutator_input=show_mutator_input,
+        show_victim_input=show_victim_input,
+    )
     print("\nsaved remote episode JSON to Modal volume cs224r-redteam-rl-data")
     print("remote episode path:", result["remote_artifacts"]["episode_path"])
     print("remote full-inputs path:", result["remote_artifacts"]["full_inputs_path"])

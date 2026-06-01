@@ -5,6 +5,12 @@ from pathlib import Path
 from typing import Protocol
 
 from redteam_rl.actions import AttackAction
+from redteam_rl.mutators import (
+    is_valid_attack_template,
+    looks_like_mutator_refusal,
+    normalize_attack_template,
+    render_attack_template,
+)
 from redteam_rl.types import EpisodeState
 
 
@@ -19,7 +25,12 @@ class AttackPolicy(Protocol):
 
 
 class MutatorLLM(Protocol):
-    def mutate(self, action: AttackAction, state: EpisodeState) -> str:
+    def mutate(
+        self,
+        action: AttackAction,
+        state: EpisodeState,
+        history_weights: list[float] | None = None,
+    ) -> str:
         """Convert the selected strategy into the next attacker message."""
 
 
@@ -27,6 +38,7 @@ class MutatorLLM(Protocol):
 class AttackStep:
     action: AttackAction
     prompt: str
+    attack_template: str | None = None
     metadata: dict[str, object] | None = None
 
 
@@ -38,23 +50,44 @@ class Attacker:
     def act(self, state: EpisodeState) -> AttackStep:
         decision = self.policy.select_action(state)
         # Support legacy policies that return an AttackAction directly.
-        action = decision.action if hasattr(decision, "action") else decision
-        prompt = self.mutator.mutate(action, state)
+        has_rich_decision = hasattr(decision, "action")
+        action = decision.action if has_rich_decision else decision
+        history_weights = (
+            getattr(decision, "attention_weights", None)
+            if has_rich_decision and hasattr(decision, "attention_weights")
+            else None
+        )
+        raw_template = self.mutator.mutate(action, state, history_weights=history_weights)
+        mutator_refused = looks_like_mutator_refusal(raw_template)
+        invalid_template = "{REQUEST}" not in raw_template or not is_valid_attack_template(raw_template)
+        fallback_used = mutator_refused or invalid_template
+        attack_template = (
+            state.current_template
+            if fallback_used
+            else normalize_attack_template(raw_template)
+        )
+        prompt = render_attack_template(attack_template, state.seed_prompt)
         metadata: dict[str, object] = {}
+        metadata["attack_template"] = attack_template
+        metadata["raw_attack_template"] = raw_template
+        metadata["mutator_refused"] = mutator_refused
+        metadata["mutator_invalid_template"] = invalid_template
+        metadata["mutator_fallback_template"] = state.current_template if fallback_used else None
+        metadata["mutator_fallback_used"] = fallback_used
         if hasattr(self.mutator, "last_debug_prompt") and self.mutator.last_debug_prompt:
             metadata["mutator_input"] = self.mutator.last_debug_prompt
         if hasattr(self.mutator, "lora_adapter_path") and self.mutator.lora_adapter_path:
             metadata["attacker_adapter"] = str(self.mutator.lora_adapter_path)
         # Policy metadata: attach any available fields from the decision object
-        if hasattr(decision, "action_probs") and getattr(decision, "action_probs") is not None:
+        if has_rich_decision and hasattr(decision, "action_probs") and getattr(decision, "action_probs") is not None:
             metadata["policy_action_probs"] = getattr(decision, "action_probs")
-        if hasattr(decision, "log_prob") and getattr(decision, "log_prob") is not None:
+        if has_rich_decision and hasattr(decision, "log_prob") and getattr(decision, "log_prob") is not None:
             metadata["policy_log_prob"] = float(getattr(decision, "log_prob"))
-        if hasattr(decision, "value") and getattr(decision, "value") is not None:
+        if has_rich_decision and hasattr(decision, "value") and getattr(decision, "value") is not None:
             metadata["policy_value"] = float(getattr(decision, "value"))
-        if hasattr(decision, "attention_weights") and getattr(decision, "attention_weights") is not None:
+        if has_rich_decision and hasattr(decision, "attention_weights") and getattr(decision, "attention_weights") is not None:
             metadata["policy_attention_weights"] = getattr(decision, "attention_weights")
-        return AttackStep(action=action, prompt=prompt, metadata=metadata)
+        return AttackStep(action=action, prompt=prompt, attack_template=attack_template, metadata=metadata)
 
 
 @dataclass(frozen=True)

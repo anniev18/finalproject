@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from redteam_rl.actions import AttackAction
 from redteam_rl.attacker import Attacker
 from redteam_rl.rewards import RewardModel
+from redteam_rl.rlbreaker_templates import select_initial_template
 from redteam_rl.types import DialogueTurn, EpisodeState
 from redteam_rl.victims import VictimModel
 
@@ -36,7 +37,10 @@ class RedTeamEnv:
         self.state: EpisodeState | None = None
 
     def reset(self, seed_prompt: str) -> EpisodeState:
-        self.state = EpisodeState(seed_prompt=seed_prompt)
+        self.state = EpisodeState(
+            seed_prompt=seed_prompt,
+            initial_template=select_initial_template(seed_prompt),
+        )
         return self.state
 
     def step(self) -> tuple[EpisodeState, float, bool, dict[str, object]]:
@@ -63,6 +67,7 @@ class RedTeamEnv:
         return self._append_turn(
             action=attack_step.action,
             user_message=attack_step.prompt,
+            attack_template=attack_step.attack_template,
             victim_response=victim_response,
             reward=reward,
             metadata=metadata,
@@ -72,6 +77,7 @@ class RedTeamEnv:
         self,
         action: AttackAction,
         user_message: str,
+        attack_template: str | None,
         victim_response: str,
         reward: float,
         metadata: dict[str, object] | None = None,
@@ -83,6 +89,7 @@ class RedTeamEnv:
                 user_message=user_message,
                 victim_response=victim_response,
                 action=action,
+                attack_template=attack_template,
                 reward=reward,
                 metadata=info,
             )
