@@ -10,3 +10,8 @@ save/
 outputs/
 results/
 
+# Downloaded model/checkpoint artifacts
+*.pt
+*.pth
+*.ckpt
+*.safetensors

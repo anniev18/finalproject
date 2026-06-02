@@ -155,7 +155,8 @@ Use the split files for rigorous runs:
 
 ```bash
 # PPO training
-modal run modal_train_trailblazer.py \
+modal run --detach modal_train_trailblazer.py \
+  --run-name=wildguard_train_split \
   --seed-prompt-file=/root/data/seed_prompts_train.json
 
 # checkpoint selection / validation
@@ -347,11 +348,12 @@ entrypoint:
 modal run modal_run_episode.py --big-gpu=true
 ```
 
-To train a TrailBlazer PPO checkpoint on Modal without using your local disk,
-run the lightweight dry-run trainer:
+To train a TrailBlazer PPO checkpoint on Modal without waiting for the return
+value locally, submit the remote training call:
 
 ```bash
-modal run modal_train_trailblazer.py \
+modal run --detach modal_train_trailblazer.py \
+  --run-name=wildguard_30x16_t3 \
   --epochs=10 \
   --episodes-per-batch=8 \
   --max-turns=3 \
@@ -359,20 +361,84 @@ modal run modal_train_trailblazer.py \
 ```
 
 The resulting checkpoints are written under
-`/root/outputs/policies/trailblazer_ppo` in the Modal volume
-`cs224r-redteam-rl-data`.
+`/root/outputs/policies/trailblazer_ppo/<run_name>/` in the Modal volume
+`cs224r-redteam-rl-data`. If `--run-name` is omitted, the trainer creates a
+timestamped folder such as:
+
+```text
+/root/outputs/policies/trailblazer_ppo/run_20260601T221305Z/
+```
+
+Each run folder contains its own checkpoints and training episode log:
+
+```text
+checkpoint_epoch_0.pt
+checkpoint_epoch_1.pt
+training_episodes.jsonl
+```
+
+By default, `modal_train_trailblazer.py` uses Modal's async call path and exits
+after submission. This avoids waiting for a long remote result in the local
+Python process, which is useful on laptops that do not have GPU-only packages
+like `vllm` installed. Follow progress with:
+
+```bash
+modal app logs cs224r-trailblazer-train
+```
+
+For short debugging runs where you explicitly want the final summary returned
+to the local terminal, add:
+
+```bash
+--wait-for-result
+```
 
 To compare RandomPolicy against a trained TrailBlazer checkpoint on the same
-set of seeds, run the evaluation wrapper:
+set of seeds, run the evaluation wrapper. Like training, eval submits
+asynchronously by default and writes results to the Modal volume:
 
 ```bash
 modal run modal_eval_trailblazer.py \
-  --trailblazer-checkpoint=/root/outputs/policies/trailblazer_ppo/checkpoint_epoch_9.pt \
+  --eval-name=fixed_epoch_9_val \
+  --trailblazer-checkpoint=/root/outputs/policies/trailblazer_ppo/wildguard_30x16_t3/checkpoint_epoch_9.pt \
   --num-episodes=10 \
   --max-turns=3 \
   --reward-backend=fake \
   --wandb-project=my_wandb_project
 ```
+
+The remote summary is saved under:
+
+```text
+/root/outputs/eval/<eval_name>.json
+```
+
+For short evals where you want the ranking and JSON printed back to your local
+terminal, add:
+
+```bash
+--wait-for-result
+```
+
+To sweep a subset of checkpoints from one PPO run folder, pass the directory
+and a comma-separated epoch list:
+
+```bash
+modal run modal_eval_trailblazer.py \
+  --eval-name=fixed_checkpoint_sweep_val \
+  --checkpoint-dir=/root/outputs/policies/trailblazer_ppo/wildguard_30x16_t3 \
+  --checkpoint-epochs=0,4,9,14,19,24,29 \
+  --num-episodes=10 \
+  --max-turns=3 \
+  --seed-prompt-file=/root/data/seed_prompts_val.json \
+  --reward-backend=wildguard \
+  --wandb-project=trailblazer-ppo
+```
+
+When run with `--wait-for-result`, the script prints a compact ranking by
+validation success rate, then mean return. Without `--wait-for-result`, inspect
+the saved JSON in `/root/outputs/eval/` or W&B. Use the top few checkpoints for
+a larger validation run before choosing one final test checkpoint.
 
 This returns summary metrics for both policies, including mean return,
 average turn count, success rate when judge labels are available, and queries

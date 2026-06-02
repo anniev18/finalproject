@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+from redteam_rl.token_budget import fit_text_to_token_budget
 from redteam_rl.types import EpisodeState
 
 
@@ -153,7 +154,10 @@ class QwenJudgeReward:
         return [self._score_label(label) for label in labels]
 
     def classify_batch(self, prompts: list[str], responses: list[str]) -> list[str]:
-        judge_prompts = [self.format_prompt(prompt, response) for prompt, response in zip(prompts, responses)]
+        judge_prompts = [
+            self._fit_prompt(self.format_prompt(prompt, response))
+            for prompt, response in zip(prompts, responses)
+        ]
         outputs = self.llm.generate(judge_prompts, self.sampling_params, use_tqdm=False)
         return [self._parse_label(output.outputs[0].text) for output in outputs]
 
@@ -181,6 +185,13 @@ class QwenJudgeReward:
             )
         except Exception:
             return user_prompt
+
+    def _fit_prompt(self, formatted_prompt: str) -> str:
+        return fit_text_to_token_budget(
+            self.tokenizer,
+            formatted_prompt,
+            max_input_tokens=self.config.max_model_len - self.config.max_tokens,
+        )
 
     @staticmethod
     def _parse_label(text: str) -> str:
@@ -217,7 +228,7 @@ class WildGuardConfig:
     temperature: float = 0.0
     top_p: float = 1.0
     max_tokens: int = 32
-    max_model_len: int = 2048
+    max_model_len: int = 4096
     tensor_parallel_size: int = 1
     gpu_memory_utilization: float = 0.35
     enforce_eager: bool = True
@@ -269,7 +280,10 @@ class WildGuardReward:
         return [self.config.unsafe_reward if label == "UNSAFE" else self.config.safe_reward for label in labels]
 
     def classify_batch(self, prompts: list[str], responses: list[str]) -> list[str]:
-        guard_prompts = [self.format_prompt(prompt, response) for prompt, response in zip(prompts, responses)]
+        guard_prompts = [
+            self._fit_prompt(self.format_prompt(prompt, response))
+            for prompt, response in zip(prompts, responses)
+        ]
         outputs = self.llm.generate(guard_prompts, self.sampling_params, use_tqdm=False)
         raw_outputs = [output.outputs[0].text.strip() for output in outputs]
         self.last_outputs = raw_outputs
@@ -310,6 +324,13 @@ class WildGuardReward:
         if "harmful response: yes" in text.lower():
             return "UNSAFE"
         return "SAFE"
+
+    def _fit_prompt(self, formatted_prompt: str) -> str:
+        return fit_text_to_token_budget(
+            self.tokenizer,
+            formatted_prompt,
+            max_input_tokens=self.config.max_model_len - self.config.max_tokens,
+        )
 
 
 class LlamaGuardReward:
@@ -352,7 +373,14 @@ class LlamaGuardReward:
         if len(prompts) != len(responses):
             raise ValueError("prompts and responses must have the same length.")
 
-        guard_prompts = self.format_prompts(prompts, responses)
+        guard_prompts = [
+            fit_text_to_token_budget(
+                self.tokenizer,
+                prompt,
+                max_input_tokens=self.config.max_model_len - 1,
+            )
+            for prompt in self.format_prompts(prompts, responses)
+        ]
         outputs = self.llm.generate(guard_prompts, self.sampling_params, use_tqdm=False)
         scores = [self._unsafe_logprob(output) for output in outputs]
         if self.config.return_probability:
@@ -385,7 +413,14 @@ class LlamaGuardReward:
         return float(logprob.logprob)
 
     def classify_batch(self, prompts: list[str], responses: list[str]) -> list[str]:
-        guard_prompts = self.format_prompts(prompts, responses)
+        guard_prompts = [
+            fit_text_to_token_budget(
+                self.tokenizer,
+                prompt,
+                max_input_tokens=self.config.max_model_len - 1,
+            )
+            for prompt in self.format_prompts(prompts, responses)
+        ]
         outputs = self.llm.generate(
             guard_prompts,
             self.sampling_params,

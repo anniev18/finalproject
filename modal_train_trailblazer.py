@@ -11,6 +11,7 @@ import copy
 import json
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import modal
@@ -247,7 +248,27 @@ def train_trailblazer_remote(
         try:
             import wandb
 
-            wandb_run = wandb.init(project=wandb_project, name="trailblazer_modal_train")
+            wandb_run = wandb.init(
+                project=wandb_project,
+                name=Path(save_dir).name,
+                resume="never",
+                config={
+                    "save_dir": save_dir,
+                    "episode_log_path": selected_episode_log_path,
+                    "epochs": epochs,
+                    "episodes_per_batch": episodes_per_batch,
+                    "max_turns": max_turns,
+                    "lr": lr,
+                    "config_path": config_path,
+                    "seed_prompt_file": seed_prompt_file,
+                    "reward_backend": selected_reward_backend,
+                    "use_template_mutator": use_template_mutator,
+                    "attacker_lora_adapter": attacker_lora_adapter,
+                    "victim_lora_adapter": victim_lora_adapter,
+                    "resume_checkpoint": resume_checkpoint,
+                    "start_epoch": start_epoch,
+                },
+            )
         except Exception as exc:
             print(f"wandb init failed: {exc}")
 
@@ -255,6 +276,7 @@ def train_trailblazer_remote(
         "epochs": [],
         "save_dir": save_dir,
         "episode_log_path": selected_episode_log_path,
+        "template_format": "rlbreaker_mutable_template",
         "config_path": config_path,
         "seed_prompt_file": seed_prompt_file,
         "reward_backend": selected_reward_backend,
@@ -330,6 +352,7 @@ def write_training_episode(
         "epoch": epoch,
         "episode_index": episode_index,
         "seed": episode_seed,
+        "template_format": "rlbreaker_mutable_template",
         "seed_prompt": state.seed_prompt,
         "initial_template": state.initial_template,
         "num_turns": len(state.turns),
@@ -367,6 +390,9 @@ def main(
     save_dir: str = "outputs/policies/trailblazer_ppo",
     remote_save_dir: str = "/root/outputs/policies/trailblazer_ppo",
     remote_episode_log_path: str | None = None,
+    seed_prompt_file: str = "/root/data/seed_prompts.json",
+    run_name: str | None = None,
+    wait_for_result: bool = False,
     epochs: int = 10,
     episodes_per_batch: int = 8,
     max_turns: int = 3,
@@ -381,28 +407,48 @@ def main(
     start_epoch: int | None = None,
     wandb_project: str | None = None,
 ) -> None:
-    result = train_trailblazer_remote.remote(
-        save_dir=remote_save_dir,
-        episode_log_path=remote_episode_log_path,
-        epochs=epochs,
-        episodes_per_batch=episodes_per_batch,
-        max_turns=max_turns,
-        lr=lr,
-        config_path="/root/configs/default.json",
-        seed_prompt_file="/root/data/seed_prompts.json",
-        seed=seed,
-        victim_history_turns=victim_history_turns,
-        reward_backend=reward_backend,
-        use_template_mutator=use_template_mutator,
-        attacker_lora_adapter=attacker_lora_adapter,
-        victim_lora_adapter=victim_lora_adapter,
-        resume_checkpoint=resume_checkpoint,
-        start_epoch=start_epoch,
-        wandb_project=wandb_project,
+    resolved_run_name = run_name or f"run_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    actual_remote_save_dir = str(Path(remote_save_dir) / resolved_run_name)
+    actual_episode_log_path = remote_episode_log_path or str(
+        Path(actual_remote_save_dir) / "training_episodes.jsonl"
     )
+    call_kwargs = {
+        "save_dir": actual_remote_save_dir,
+        "episode_log_path": actual_episode_log_path,
+        "epochs": epochs,
+        "episodes_per_batch": episodes_per_batch,
+        "max_turns": max_turns,
+        "lr": lr,
+        "config_path": "/root/configs/default.json",
+        "seed_prompt_file": seed_prompt_file,
+        "seed": seed,
+        "victim_history_turns": victim_history_turns,
+        "reward_backend": reward_backend,
+        "use_template_mutator": use_template_mutator,
+        "attacker_lora_adapter": attacker_lora_adapter,
+        "victim_lora_adapter": victim_lora_adapter,
+        "resume_checkpoint": resume_checkpoint,
+        "start_epoch": start_epoch,
+        "wandb_project": wandb_project,
+    }
+    if not wait_for_result:
+        function_call = train_trailblazer_remote.spawn(**call_kwargs)
+        call_id = getattr(function_call, "object_id", None) or getattr(function_call, "call_id", None)
+        print("submitted TrailBlazer training without waiting for the result")
+        if call_id:
+            print("function call id:", call_id)
+        print("run name:", resolved_run_name)
+        print("remote checkpoint path:", actual_remote_save_dir)
+        print("remote training episodes:", actual_episode_log_path)
+        print("Modal volume: cs224r-redteam-rl-data")
+        print("Use `modal app logs cs224r-trailblazer-train` to follow progress.")
+        return
+
+    result = train_trailblazer_remote.remote(**call_kwargs)
     print(json.dumps(result, indent=2))
     print("\nsaved TrailBlazer checkpoints to Modal volume cs224r-redteam-rl-data")
-    print(f"remote checkpoint path: {remote_save_dir}")
+    print(f"run name: {resolved_run_name}")
+    print(f"remote checkpoint path: {actual_remote_save_dir}")
     print("remote training episodes:", result.get("episode_log_path"))
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)

@@ -548,6 +548,7 @@ def main(
     seed_prompt: str | None = None,
     seed_prompt_file: str = "/root/data/seed_prompts.json",
     seed: int | None = None,
+    seeds: str | None = None,
     max_turns: int = 2,
     victim_history_turns: int | None = None,
     use_template_mutator: bool = False,
@@ -559,6 +560,8 @@ def main(
     attacker_lora_adapter: str | None = None,
     policy_checkpoint: str | None = None,
     victim_lora_adapter: str | None = None,
+    remote_output_dir: str = "/root/outputs/modal_episodes",
+    remote_trajectory_bank: str = "/root/outputs/trajectory_bank/episodes.jsonl",
     wandb_project: str | None = None,
     output_dir: str = "outputs/modal_episodes",
     output_file: str | None = None,
@@ -567,27 +570,18 @@ def main(
 ) -> None:
     aux_reward_backends = [aux_reward_backend] if aux_reward_backend else None
     selected_use_template_mutator = use_template_mutator
-    if big_gpu:
-        result = run_episode_llama_guard_remote.remote(
+    selected_seeds = _parse_seeds(seeds)
+    if selected_seeds and seed_prompt:
+        raise ValueError("--seeds cannot be combined with --seed-prompt because every seed would use the same prompt.")
+
+    results = []
+    seeds_to_run = selected_seeds or [seed]
+    for seed_index, selected_seed in enumerate(seeds_to_run, start=1):
+        result = _run_remote_entrypoint_episode(
+            big_gpu=big_gpu,
             seed_prompt=seed_prompt,
             seed_prompt_file=seed_prompt_file,
-            seed=seed,
-            max_turns=max_turns,
-            victim_history_turns=victim_history_turns,
-            use_template_mutator=selected_use_template_mutator,
-            aux_reward_backends=aux_reward_backends,
-            show_mutator_input=show_mutator_input,
-            show_victim_input=show_victim_input,
-            attacker_lora_adapter=attacker_lora_adapter,
-            policy_checkpoint=policy_checkpoint,
-            victim_lora_adapter=victim_lora_adapter,
-            wandb_project=wandb_project,
-        )
-    else:
-        result = run_episode_remote.remote(
-            seed_prompt=seed_prompt,
-            seed_prompt_file=seed_prompt_file,
-            seed=seed,
+            seed=selected_seed,
             max_turns=max_turns,
             victim_history_turns=victim_history_turns,
             use_template_mutator=selected_use_template_mutator,
@@ -598,23 +592,122 @@ def main(
             attacker_lora_adapter=attacker_lora_adapter,
             policy_checkpoint=policy_checkpoint,
             victim_lora_adapter=victim_lora_adapter,
+            remote_output_dir=remote_output_dir,
+            remote_trajectory_bank=remote_trajectory_bank,
             wandb_project=wandb_project,
         )
-    if save_local:
-        output_path = _write_episode_result(result, output_dir=output_dir, output_file=output_file)
-        _append_episode_result_to_bank(result, trajectory_bank)
-    _print_episode_trace(
-        result,
+        results.append(result)
+        if save_local:
+            output_path = _write_episode_result(result, output_dir=output_dir, output_file=output_file)
+            _append_episode_result_to_bank(result, trajectory_bank)
+        if selected_seeds:
+            print(f"\n\nSeed {selected_seed} ({seed_index}/{len(seeds_to_run)})")
+        _print_episode_trace(
+            result,
+            show_mutator_input=show_mutator_input,
+            show_victim_input=show_victim_input,
+        )
+        print("\nsaved remote episode JSON to Modal volume cs224r-redteam-rl-data")
+        print("remote episode path:", result["remote_artifacts"]["episode_path"])
+        print("remote full-inputs path:", result["remote_artifacts"]["full_inputs_path"])
+        print("remote trajectory bank:", result["remote_artifacts"]["trajectory_bank"])
+        if save_local:
+            print(f"saved local episode JSON to {output_path}")
+            print(f"appended local episode to {trajectory_bank}")
+
+    if selected_seeds:
+        print("\nMulti-seed episode summary")
+        print("=" * 80)
+        print(_kv_section("Summary", _multi_episode_summary_metrics(results)))
+
+
+def _run_remote_entrypoint_episode(
+    *,
+    big_gpu: bool,
+    seed_prompt: str | None,
+    seed_prompt_file: str,
+    seed: int | None,
+    max_turns: int,
+    victim_history_turns: int | None,
+    use_template_mutator: bool,
+    reward_backend: str | None,
+    aux_reward_backends: list[str] | None,
+    show_mutator_input: bool,
+    show_victim_input: bool,
+    attacker_lora_adapter: str | None,
+    policy_checkpoint: str | None,
+    victim_lora_adapter: str | None,
+    remote_output_dir: str,
+    remote_trajectory_bank: str,
+    wandb_project: str | None,
+) -> dict:
+    if big_gpu:
+        return run_episode_llama_guard_remote.remote(
+            seed_prompt=seed_prompt,
+            seed_prompt_file=seed_prompt_file,
+            seed=seed,
+            max_turns=max_turns,
+            victim_history_turns=victim_history_turns,
+            use_template_mutator=use_template_mutator,
+            aux_reward_backends=aux_reward_backends,
+            show_mutator_input=show_mutator_input,
+            show_victim_input=show_victim_input,
+            attacker_lora_adapter=attacker_lora_adapter,
+            policy_checkpoint=policy_checkpoint,
+            victim_lora_adapter=victim_lora_adapter,
+            remote_output_dir=remote_output_dir,
+            remote_trajectory_bank=remote_trajectory_bank,
+            wandb_project=wandb_project,
+        )
+    return run_episode_remote.remote(
+        seed_prompt=seed_prompt,
+        seed_prompt_file=seed_prompt_file,
+        seed=seed,
+        max_turns=max_turns,
+        victim_history_turns=victim_history_turns,
+        use_template_mutator=use_template_mutator,
+        reward_backend=reward_backend,
+        aux_reward_backends=aux_reward_backends,
         show_mutator_input=show_mutator_input,
         show_victim_input=show_victim_input,
+        attacker_lora_adapter=attacker_lora_adapter,
+        policy_checkpoint=policy_checkpoint,
+        victim_lora_adapter=victim_lora_adapter,
+        remote_output_dir=remote_output_dir,
+        remote_trajectory_bank=remote_trajectory_bank,
+        wandb_project=wandb_project,
     )
-    print("\nsaved remote episode JSON to Modal volume cs224r-redteam-rl-data")
-    print("remote episode path:", result["remote_artifacts"]["episode_path"])
-    print("remote full-inputs path:", result["remote_artifacts"]["full_inputs_path"])
-    print("remote trajectory bank:", result["remote_artifacts"]["trajectory_bank"])
-    if save_local:
-        print(f"saved local episode JSON to {output_path}")
-        print(f"appended local episode to {trajectory_bank}")
+
+
+def _parse_seeds(seeds: str | None) -> list[int]:
+    if not seeds:
+        return []
+    parsed = []
+    for raw_seed in seeds.split(","):
+        stripped = raw_seed.strip()
+        if stripped:
+            parsed.append(int(stripped))
+    return parsed
+
+
+def _multi_episode_summary_metrics(results: list[dict]) -> dict[str, object]:
+    total_turns = sum(len(result.get("turns", [])) for result in results)
+    successful_episodes = 0
+    successful_turns = 0
+    for result in results:
+        episode_success = False
+        for turn in result.get("turns", []):
+            if turn.get("reward") is not None and float(turn.get("reward")) >= 1.0:
+                successful_turns += 1
+                episode_success = True
+        if episode_success:
+            successful_episodes += 1
+    return {
+        "episodes": len(results),
+        "turns": total_turns,
+        "successful_episodes_reward_ge_1": successful_episodes,
+        "successful_turns_reward_ge_1": successful_turns,
+    }
 
 
 def _write_episode_result(result: dict, output_dir: str, output_file: str | None = None) -> Path:

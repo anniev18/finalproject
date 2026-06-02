@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from redteam_rl.token_budget import fit_text_to_token_budget
 from redteam_rl.types import EpisodeState
 
 
@@ -30,7 +31,7 @@ class VictimConfig:
     temperature: float = 0.7
     top_p: float = 0.95
     max_tokens: int = 128
-    max_model_len: int = 4096
+    max_model_len: int = 8192
     tensor_parallel_size: int = 1
     gpu_memory_utilization: float = 0.3
     enforce_eager: bool = True
@@ -107,7 +108,9 @@ class VLLMVictim:
         victim_history_turns: int = 0,
     ) -> list[str]:
         formatted_prompts = [
-            self.format_prompt(prompt, state=state, victim_history_turns=victim_history_turns)
+            self._fit_prompt(
+                self.format_prompt(prompt, state=state, victim_history_turns=victim_history_turns)
+            )
             for prompt in prompts
         ]
         self.last_debug_prompt = (
@@ -151,6 +154,13 @@ class VLLMVictim:
             )
         except Exception:
             return prompt.rstrip()
+
+    def _fit_prompt(self, formatted_prompt: str) -> str:
+        return fit_text_to_token_budget(
+            self.tokenizer,
+            formatted_prompt,
+            max_input_tokens=self.config.max_model_len - self.config.max_tokens,
+        )
 
     def set_lora_adapter(
         self,

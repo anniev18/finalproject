@@ -6,6 +6,7 @@ from pathlib import Path
 from redteam_rl.actions import AttackAction
 from redteam_rl.history import HistoryEncoder
 from redteam_rl.rlbreaker_templates import select_alternate_template
+from redteam_rl.token_budget import fit_text_to_token_budget
 from redteam_rl.types import EpisodeState
 
 REQUEST_PLACEHOLDER = "{REQUEST}"
@@ -170,10 +171,71 @@ class LLMMutator:
         state: EpisodeState,
         history_weights: list[float] | None = None,
     ) -> str:
-        user_prompt = rlbreaker_mutator_prompt(
+        max_input_tokens = self.config.max_model_len - self.config.max_tokens
+        crossover_template = self._select_crossover_template(state, history_weights)
+        return self._format_prompt_with_template_budget(
             action=action,
             current_template=state.current_template,
-            crossover_template=self._select_crossover_template(state, history_weights),
+            crossover_template=crossover_template,
+            max_input_tokens=max_input_tokens,
+        )
+
+    def _format_prompt_with_template_budget(
+        self,
+        action: AttackAction,
+        current_template: str,
+        crossover_template: str | None,
+        max_input_tokens: int,
+    ) -> str:
+        formatted = self._format_prompt_from_templates(action, current_template, crossover_template)
+        if self._count_tokens(formatted) <= max_input_tokens:
+            return formatted
+
+        minimal_crossover = REQUEST_PLACEHOLDER if action == AttackAction.CROSSOVER else crossover_template
+        overhead = self._count_tokens(
+            self._format_prompt_from_templates(action, REQUEST_PLACEHOLDER, minimal_crossover)
+        )
+        available_template_tokens = max(64, max_input_tokens - overhead - 16)
+
+        if action == AttackAction.CROSSOVER:
+            per_template_budget = max(64, available_template_tokens // 2)
+            current_template = trim_attack_template_for_mutator(
+                self.tokenizer,
+                current_template,
+                per_template_budget,
+            )
+            crossover_template = trim_attack_template_for_mutator(
+                self.tokenizer,
+                crossover_template or REQUEST_PLACEHOLDER,
+                per_template_budget,
+            )
+        else:
+            current_template = trim_attack_template_for_mutator(
+                self.tokenizer,
+                current_template,
+                available_template_tokens,
+            )
+
+        formatted = self._format_prompt_from_templates(action, current_template, crossover_template)
+        if self._count_tokens(formatted) <= max_input_tokens:
+            return formatted
+
+        return fit_text_to_token_budget(
+            self.tokenizer,
+            formatted,
+            max_input_tokens=max_input_tokens,
+        )
+
+    def _format_prompt_from_templates(
+        self,
+        action: AttackAction,
+        current_template: str,
+        crossover_template: str | None,
+    ) -> str:
+        user_prompt = rlbreaker_mutator_prompt(
+            action=action,
+            current_template=current_template,
+            crossover_template=crossover_template,
         )
         messages = [
             {"role": "system", "content": self.config.system_prompt},
@@ -187,6 +249,9 @@ class LLMMutator:
             )
         except Exception:
             return f"{self.config.system_prompt}\n\n{user_prompt}"
+
+    def _count_tokens(self, text: str) -> int:
+        return len(self.tokenizer.encode(text, add_special_tokens=False))
 
     @staticmethod
     def _clean_output(text: str) -> str:
@@ -341,6 +406,51 @@ def normalize_attack_template(template: str) -> str:
     if REQUEST_PLACEHOLDER not in normalized:
         normalized = f"{normalized.rstrip()} {REQUEST_PLACEHOLDER}".strip()
     return normalized
+
+
+def trim_attack_template_for_mutator(tokenizer, template: str, max_tokens: int) -> str:
+    """Trim only a template body while preserving the request placeholder.
+
+    Unlike generic tail trimming, this keeps the placeholder and retains both
+    the beginning and end of long jailbreak templates. The surrounding mutator
+    system/task instructions are preserved by trimming before the chat prompt
+    is assembled.
+    """
+    normalized = normalize_attack_template(template)
+    token_ids = tokenizer.encode(normalized, add_special_tokens=False)
+    if len(token_ids) <= max_tokens:
+        return normalized
+
+    placeholder_ids = tokenizer.encode(REQUEST_PLACEHOLDER, add_special_tokens=False)
+    remaining = max_tokens - len(placeholder_ids)
+    if remaining <= 0:
+        return REQUEST_PLACEHOLDER
+
+    before, after = normalized.split(REQUEST_PLACEHOLDER, 1)
+    before_ids = tokenizer.encode(before, add_special_tokens=False)
+    after_ids = tokenizer.encode(after, add_special_tokens=False)
+
+    if after_ids:
+        before_budget = max(1, int(remaining * 0.75))
+        after_budget = max(1, remaining - before_budget)
+    else:
+        before_budget = remaining
+        after_budget = 0
+
+    trimmed_before = _decode_head_tail(tokenizer, before_ids, before_budget)
+    trimmed_after = _decode_head_tail(tokenizer, after_ids, after_budget) if after_budget else ""
+    return f"{trimmed_before}{REQUEST_PLACEHOLDER}{trimmed_after}".strip()
+
+
+def _decode_head_tail(tokenizer, token_ids: list[int], budget: int) -> str:
+    if budget <= 0 or not token_ids:
+        return ""
+    if len(token_ids) <= budget:
+        return tokenizer.decode(token_ids, skip_special_tokens=False)
+    head_budget = max(1, budget // 2)
+    tail_budget = max(1, budget - head_budget)
+    kept_ids = token_ids[:head_budget] + token_ids[-tail_budget:]
+    return tokenizer.decode(kept_ids, skip_special_tokens=False)
 
 
 def is_valid_attack_template(template: str) -> bool:
