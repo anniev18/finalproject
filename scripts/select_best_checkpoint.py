@@ -45,7 +45,10 @@ def main() -> None:
 
     print("Checkpoint ranking")
     print("=" * 96)
-    print(f"{'rank':<5} {'label':<12} {'success':<10} {'mean_return':<12} {'mean_turns':<11} checkpoint")
+    print(
+        f"{'rank':<5} {'label':<12} {'success':<10} {'mean_return':<12} "
+        f"{'mean_turns':<11} {'q/success':<10} checkpoint"
+    )
     for index, row in enumerate(ranked, start=1):
         print(
             f"{index:<5} "
@@ -53,6 +56,7 @@ def main() -> None:
             f"{float(row.get('success_rate', 0.0)):<10.3f} "
             f"{float(row.get('mean_return', 0.0)):<12.3f} "
             f"{float(row.get('mean_turns', 0.0)):<11.3f} "
+            f"{_format_optional(row.get('queries_per_success')):<10} "
             f"{row.get('checkpoint')}"
         )
 
@@ -72,6 +76,9 @@ def main() -> None:
     print(f"success_rate: {float(best.get('success_rate', 0.0)):.3f}")
     print(f"mean_return: {float(best.get('mean_return', 0.0)):.3f}")
     print(f"mean_turns: {float(best.get('mean_turns', 0.0)):.3f}")
+    print(f"queries_per_success: {_format_optional(best.get('queries_per_success'))}")
+    if best.get("first_success_turn_histogram"):
+        print(f"first_success_turn_histogram: {best.get('first_success_turn_histogram')}")
     print("reason:", _selection_reason(best, tied_success, tied_return))
 
 
@@ -87,6 +94,15 @@ def _epoch_number(label: str) -> int:
         except ValueError:
             return -1
     return -1
+
+
+def _format_optional(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.3f}"
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def _selection_reason(

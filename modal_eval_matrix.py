@@ -1,22 +1,15 @@
-"""Modal entrypoint for comparing RandomPolicy vs TrailBlazerPolicy.
-
-This wrapper runs both policies on the same set of seeds and returns a compact
-summary with return, turn-count, and success metrics. By default it mirrors the
-real episode/training stack with the LLM mutator; pass ``--use-template-mutator``
-for cheaper checks.
-"""
+"""One-command 2x2 eval for fixed-continued vs co-evolved PPO policies."""
 
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 import modal
 
 
-app = modal.App("cs224r-trailblazer-eval")
+app = modal.App("cs224r-eval-matrix")
 volume = modal.Volume.from_name("cs224r-redteam-rl-data", create_if_missing=True)
 
 image = (
@@ -27,17 +20,144 @@ image = (
     .add_local_dir("redteam_rl", remote_path="/root/redteam_rl")
     .add_local_dir("configs", remote_path="/root/configs")
     .add_local_dir("data", remote_path="/root/data")
+    .add_local_file("modal_eval_trailblazer.py", remote_path="/root/modal_eval_trailblazer.py")
+    .add_local_file("requirements-gpu.txt", remote_path="/root/requirements-gpu.txt")
 )
 
 
 @app.function(
     image=image,
     gpu="L40S",
-    timeout=60 * 60 * 5,
+    timeout=60 * 60 * 8,
     volumes={"/root/outputs": volume},
     secrets=[modal.Secret.from_name("wandb-secret"), modal.Secret.from_name("huggingface-secret")],
 )
-def evaluate_trailblazer_remote(
+def run_eval_matrix_remote(
+    eval_name: str,
+    fixed_policy_checkpoint: str,
+    coevolved_policy_checkpoint: str,
+    evolved_victim_adapter: str,
+    num_episodes: int = 50,
+    max_turns: int = 3,
+    seed: int = 0,
+    seed_prompt_file: str = "/root/data/seed_prompts_test.json",
+    reward_backend: str = "wildguard",
+    victim_history_turns: int | None = None,
+    use_template_mutator: bool = False,
+    wandb_project: str | None = None,
+    remote_output_dir: str = "/root/outputs/eval_matrix",
+    skip_fixed_base: bool = False,
+) -> dict:
+    output_dir = Path(remote_output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    volume.commit()
+
+    cells = [
+        {
+            "cell": "fixed_policy__base_victim",
+            "policy_label": "fixed_continued",
+            "victim_label": "base",
+            "checkpoint": fixed_policy_checkpoint,
+            "victim_lora_adapter": None,
+        },
+        {
+            "cell": "fixed_policy__evolved_victim",
+            "policy_label": "fixed_continued",
+            "victim_label": "evolved",
+            "checkpoint": fixed_policy_checkpoint,
+            "victim_lora_adapter": evolved_victim_adapter,
+        },
+        {
+            "cell": "coevolved_policy__base_victim",
+            "policy_label": "coevolved",
+            "victim_label": "base",
+            "checkpoint": coevolved_policy_checkpoint,
+            "victim_lora_adapter": None,
+        },
+        {
+            "cell": "coevolved_policy__evolved_victim",
+            "policy_label": "coevolved",
+            "victim_label": "evolved",
+            "checkpoint": coevolved_policy_checkpoint,
+            "victim_lora_adapter": evolved_victim_adapter,
+        },
+    ]
+    if skip_fixed_base:
+        cells = [cell for cell in cells if cell["cell"] != "fixed_policy__base_victim"]
+
+    cell_results = []
+    for cell in cells:
+        cell_eval_name = f"{eval_name}_{cell['cell']}"
+        print(f"starting eval cell: {cell_eval_name}", flush=True)
+        result = _evaluate_trailblazer_inline(
+            trailblazer_checkpoint=cell["checkpoint"],
+            trailblazer_checkpoints=None,
+            num_episodes=num_episodes,
+            max_turns=max_turns,
+            seed=seed,
+            seed_prompt_file=seed_prompt_file,
+            config_path="/root/configs/default.json",
+            victim_history_turns=victim_history_turns,
+            reward_backend=reward_backend,
+            use_template_mutator=use_template_mutator,
+            attacker_lora_adapter=None,
+            victim_lora_adapter=cell["victim_lora_adapter"],
+            verbose=True,
+            show_text=False,
+            remote_output_dir=str(output_dir / eval_name),
+            eval_name=cell_eval_name,
+            wandb_project=wandb_project,
+        )
+        cell_result = {
+            **cell,
+            "eval_name": cell_eval_name,
+            "summary_path": result.get("remote_artifacts", {}).get("summary_path"),
+            "episode_log_path": result.get("remote_artifacts", {}).get("episode_log_path"),
+            "random": result.get("random"),
+            "trailblazer": result.get("trailblazer"),
+            "checkpoint_results": result.get("checkpoint_results"),
+        }
+        cell_results.append(cell_result)
+        _write_json(output_dir / eval_name / "matrix_summary_partial.json", _matrix_summary(
+            eval_name=eval_name,
+            fixed_policy_checkpoint=fixed_policy_checkpoint,
+            coevolved_policy_checkpoint=coevolved_policy_checkpoint,
+            evolved_victim_adapter=evolved_victim_adapter,
+            num_episodes=num_episodes,
+            max_turns=max_turns,
+            seed=seed,
+            seed_prompt_file=seed_prompt_file,
+            reward_backend=reward_backend,
+            skipped_cells=["fixed_policy__base_victim"] if skip_fixed_base else [],
+            cells=cell_results,
+        ))
+        volume.commit()
+
+    summary = _matrix_summary(
+        eval_name=eval_name,
+        fixed_policy_checkpoint=fixed_policy_checkpoint,
+        coevolved_policy_checkpoint=coevolved_policy_checkpoint,
+        evolved_victim_adapter=evolved_victim_adapter,
+        num_episodes=num_episodes,
+        max_turns=max_turns,
+        seed=seed,
+        seed_prompt_file=seed_prompt_file,
+        reward_backend=reward_backend,
+        skipped_cells=["fixed_policy__base_victim"] if skip_fixed_base else [],
+        cells=cell_results,
+    )
+    summary_path = output_dir / eval_name / "matrix_summary.json"
+    _write_json(summary_path, summary)
+    volume.commit()
+    summary["remote_artifacts"] = {
+        "volume": "cs224r-redteam-rl-data",
+        "summary_path": str(summary_path),
+        "output_dir": str(output_dir / eval_name),
+    }
+    return summary
+
+
+def _evaluate_trailblazer_inline(
     trailblazer_checkpoint: str,
     trailblazer_checkpoints: list[str] | None = None,
     num_episodes: int = 10,
@@ -57,11 +177,10 @@ def evaluate_trailblazer_remote(
     eval_name: str | None = None,
     wandb_project: str | None = None,
 ) -> dict:
-    os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
-    _ensure_hf_token_env()
-
+    import os
     import sys
 
+    os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
     sys.path.insert(0, "/root")
 
     from redteam_rl.attacker import Attacker, EvolvingAttacker
@@ -75,7 +194,7 @@ def evaluate_trailblazer_remote(
     from redteam_rl.victims import EvolvingVictim, VLLMVictim
 
     cfg = load_config(config_path)
-    run_id = new_run_id("modal_trailblazer_eval")
+    run_id = new_run_id("modal_eval_matrix_cell")
     selected_reward_backend = reward_backend or cfg.reward_backend()
     remote_eval_dir = Path(remote_output_dir)
     remote_eval_dir.mkdir(parents=True, exist_ok=True)
@@ -128,11 +247,7 @@ def evaluate_trailblazer_remote(
         return RedTeamEnv(
             config=cfg.env_config(
                 max_turns=max_turns,
-                **(
-                    {"victim_history_turns": victim_history_turns}
-                    if victim_history_turns is not None
-                    else {}
-                ),
+                **({"victim_history_turns": victim_history_turns} if victim_history_turns is not None else {}),
             ),
             attacker=attacker,
             victim=victim,
@@ -170,7 +285,7 @@ def evaluate_trailblazer_remote(
             wandb.define_metric("random/*", step_metric="eval_step")
             wandb.define_metric("trailblazer/*", step_metric="eval_step")
         except Exception as exc:
-            print(f"wandb init failed: {exc}")
+            print(f"wandb init failed: {exc}", flush=True)
 
     def _preview(text: str) -> str:
         text = " ".join(str(text).split())
@@ -211,7 +326,6 @@ def evaluate_trailblazer_remote(
             rewards = [float(turn.reward or 0.0) for turn in turns]
             unsafe_turns = [turn for turn in turns if str(turn.metadata.get("judge_label", "")).upper() == "UNSAFE"]
             success = bool(unsafe_turns)
-            first_success_turn = _first_success_turn(turns)
             episode_record = {
                 "policy": policy_name,
                 "seed": episode_seed,
@@ -220,7 +334,6 @@ def evaluate_trailblazer_remote(
                 "num_turns": len(turns),
                 "episode_return": sum(rewards),
                 "success": success,
-                "first_success_turn": first_success_turn,
                 "judge_labels": [turn.metadata.get("judge_label") for turn in turns],
                 "turns": [
                     {
@@ -238,7 +351,7 @@ def evaluate_trailblazer_remote(
                 ],
             }
             episodes.append(episode_record)
-            _append_remote_eval_episode(remote_episode_log_path, episode_record)
+            _append_jsonl(remote_episode_log_path, episode_record)
             volume.commit()
             if verbose:
                 print(
@@ -258,11 +371,8 @@ def evaluate_trailblazer_remote(
                             f"{policy_name}/episode_return": episode_record["episode_return"],
                             f"{policy_name}/num_turns": episode_record["num_turns"],
                             f"{policy_name}/success": int(success),
-                            f"{policy_name}/first_success_turn": first_success_turn or 0,
                             f"{policy_name}/unsafe_turns": len(unsafe_turns),
-                            f"{policy_name}/actions": ",".join(
-                                turn["action"] or "" for turn in episode_record["turns"]
-                            ),
+                            f"{policy_name}/actions": ",".join(turn["action"] or "" for turn in episode_record["turns"]),
                         }
                     )
                 except Exception as exc:
@@ -276,50 +386,20 @@ def evaluate_trailblazer_remote(
         checkpoint_label = _checkpoint_label(checkpoint)
         trailblazer_policy = TrailBlazerPolicy.from_checkpoint(checkpoint)
         trailblazer_episodes = run_policy(checkpoint_label, trailblazer_policy)
-        trailblazer_runs.append(
-            {
-                "checkpoint": checkpoint,
-                "label": checkpoint_label,
-                "episodes": trailblazer_episodes,
-            }
-        )
+        trailblazer_runs.append({"checkpoint": checkpoint, "label": checkpoint_label, "episodes": trailblazer_episodes})
 
     def summarize(episodes: list[dict]) -> dict:
         total = len(episodes)
         successes = [episode for episode in episodes if episode["success"]]
-        first_success_turns = [
-            int(episode["first_success_turn"])
-            for episode in successes
-            if episode.get("first_success_turn") is not None
-        ]
-        first_success_histogram = {
-            str(turn): first_success_turns.count(turn)
-            for turn in sorted(set(first_success_turns))
-        }
-        summary = {
+        return {
             "num_episodes": total,
             "mean_return": sum(episode["episode_return"] for episode in episodes) / total if total else 0.0,
             "mean_turns": sum(episode["num_turns"] for episode in episodes) / total if total else 0.0,
             "success_rate": len(successes) / total if total else 0.0,
             "queries_per_success": (
-                sum(first_success_turns) / len(first_success_turns)
-                if first_success_turns
-                else None
-            ),
-            "mean_first_success_turn": (
-                sum(first_success_turns) / len(first_success_turns)
-                if first_success_turns
-                else None
-            ),
-            "median_first_success_turn": _median(first_success_turns),
-            "first_success_turn_histogram": first_success_histogram,
-            "successful_episode_mean_turns": (
-                sum(episode["num_turns"] for episode in successes) / len(successes)
-                if successes
-                else None
+                sum(episode["num_turns"] for episode in successes) / len(successes) if successes else None
             ),
         }
-        return summary
 
     summary = {
         "run_id": run_id,
@@ -339,31 +419,12 @@ def evaluate_trailblazer_remote(
         "random": summarize(random_episodes),
         "trailblazer": summarize(trailblazer_runs[-1]["episodes"]) if trailblazer_runs else {},
         "checkpoint_results": [
-            {
-                "checkpoint": run["checkpoint"],
-                "label": run["label"],
-                **summarize(run["episodes"]),
-            }
+            {"checkpoint": run["checkpoint"], "label": run["label"], **summarize(run["episodes"])}
             for run in trailblazer_runs
         ],
-        "checkpoint_ranking": sorted(
-            [
-                {
-                    "checkpoint": run["checkpoint"],
-                    "label": run["label"],
-                    **summarize(run["episodes"]),
-                }
-                for run in trailblazer_runs
-            ],
-            key=lambda row: (row["success_rate"], row["mean_return"]),
-            reverse=True,
-        ),
         "random_episodes": random_episodes,
         "trailblazer_episodes": trailblazer_runs[-1]["episodes"] if trailblazer_runs else [],
-        "checkpoint_episodes": {
-            run["label"]: run["episodes"]
-            for run in trailblazer_runs
-        },
+        "checkpoint_episodes": {run["label"]: run["episodes"] for run in trailblazer_runs},
         "metadata": build_model_metadata(
             run_id=run_id,
             victim_model=cfg.models.victim,
@@ -387,23 +448,15 @@ def evaluate_trailblazer_remote(
         try:
             wandb_run.summary["random/success_rate"] = summary["random"]["success_rate"]
             wandb_run.summary["random/mean_return"] = summary["random"]["mean_return"]
-            wandb_run.summary["random/mean_turns"] = summary["random"]["mean_turns"]
-            wandb_run.summary["random/queries_per_success"] = summary["random"]["queries_per_success"] or 0.0
-            wandb_run.summary["random/mean_first_success_turn"] = (
-                summary["random"]["mean_first_success_turn"] or 0.0
-            )
             for row in summary["checkpoint_results"]:
                 prefix = f"checkpoint/{row['label']}"
                 wandb_run.summary[f"{prefix}/success_rate"] = row["success_rate"]
                 wandb_run.summary[f"{prefix}/mean_return"] = row["mean_return"]
-                wandb_run.summary[f"{prefix}/mean_turns"] = row["mean_turns"]
-                wandb_run.summary[f"{prefix}/queries_per_success"] = row["queries_per_success"] or 0.0
-                wandb_run.summary[f"{prefix}/mean_first_success_turn"] = row["mean_first_success_turn"] or 0.0
             wandb_run.finish()
         except Exception as exc:
-            print(f"wandb logging failed: {exc}")
+            print(f"wandb logging failed: {exc}", flush=True)
 
-    remote_summary_path = _write_remote_eval_summary(summary, remote_output_dir, resolved_eval_name)
+    remote_summary_path = _write_eval_summary(summary, remote_output_dir, resolved_eval_name)
     summary["remote_artifacts"] = {
         "volume": "cs224r-redteam-rl-data",
         "summary_path": remote_summary_path,
@@ -413,52 +466,72 @@ def evaluate_trailblazer_remote(
     return summary
 
 
-def _append_remote_eval_episode(path: Path, episode_record: dict) -> None:
+def _matrix_summary(
+    *,
+    eval_name: str,
+    fixed_policy_checkpoint: str,
+    coevolved_policy_checkpoint: str,
+    evolved_victim_adapter: str,
+    num_episodes: int,
+    max_turns: int,
+    seed: int,
+    seed_prompt_file: str,
+    reward_backend: str,
+    skipped_cells: list[str],
+    cells: list[dict],
+) -> dict:
+    table = []
+    for cell in cells:
+        metrics = cell.get("trailblazer") or {}
+        table.append(
+            {
+                "policy": cell["policy_label"],
+                "victim": cell["victim_label"],
+                "success_rate": metrics.get("success_rate"),
+                "mean_return": metrics.get("mean_return"),
+                "mean_turns": metrics.get("mean_turns"),
+                "queries_per_success": metrics.get("queries_per_success"),
+                "summary_path": cell.get("summary_path"),
+                "episode_log_path": cell.get("episode_log_path"),
+            }
+        )
+    return {
+        "eval_name": eval_name,
+        "config": {
+            "fixed_policy_checkpoint": fixed_policy_checkpoint,
+            "coevolved_policy_checkpoint": coevolved_policy_checkpoint,
+            "evolved_victim_adapter": evolved_victim_adapter,
+            "num_episodes": num_episodes,
+            "max_turns": max_turns,
+            "seed": seed,
+            "seed_prompt_file": seed_prompt_file,
+            "reward_backend": reward_backend,
+            "skipped_cells": skipped_cells,
+        },
+        "table": table,
+        "cells": cells,
+    }
+
+
+def _write_json(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+
+
+def _append_jsonl(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(episode_record) + "\n")
+        f.write(json.dumps(payload) + "\n")
 
 
-def _ensure_hf_token_env() -> None:
-    if not os.environ.get("HF_TOKEN"):
-        for alternate_name in ("HUGGINGFACE_HUB_TOKEN", "HF_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
-            alternate_value = os.environ.get(alternate_name)
-            if alternate_value:
-                os.environ["HF_TOKEN"] = alternate_value
-                break
-    if os.environ.get("HF_TOKEN"):
-        os.environ.setdefault("HUGGINGFACE_HUB_TOKEN", os.environ["HF_TOKEN"])
-        os.environ.setdefault("HF_HUB_TOKEN", os.environ["HF_TOKEN"])
-    print(f"HF_TOKEN available: {bool(os.environ.get('HF_TOKEN'))}", flush=True)
-
-
-def _first_success_turn(turns) -> int | None:
-    for index, turn in enumerate(turns, start=1):
-        label = str(turn.metadata.get("judge_label", "")).upper()
-        reward = float(turn.reward or 0.0)
-        if label == "UNSAFE" or reward >= 1.0:
-            return index
-    return None
-
-
-def _median(values: list[int]) -> float | None:
-    if not values:
-        return None
-    sorted_values = sorted(values)
-    midpoint = len(sorted_values) // 2
-    if len(sorted_values) % 2:
-        return float(sorted_values[midpoint])
-    return (sorted_values[midpoint - 1] + sorted_values[midpoint]) / 2.0
-
-
-def _write_remote_eval_summary(summary: dict, remote_output_dir: str, eval_name: str | None = None) -> str:
+def _write_eval_summary(summary: dict, remote_output_dir: str, eval_name: str | None = None) -> str:
     output_dir = Path(remote_output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     name = eval_name or f"eval_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     path = output_dir / f"{name}.json"
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
-        f.write("\n")
+    _write_json(path, summary)
     return str(path)
 
 
@@ -495,113 +568,57 @@ def _wandb_eval_run_name(
     return f"eval/{eval_name}/{checkpoint_part}/{victim_part}"
 
 
-def _parse_checkpoint_epochs(checkpoint_dir: str, checkpoint_epochs: str | None) -> list[str]:
-    if not checkpoint_epochs:
-        return []
-    checkpoints = []
-    for raw_epoch in checkpoint_epochs.split(","):
-        epoch = raw_epoch.strip()
-        if not epoch:
-            continue
-        checkpoints.append(str(Path(checkpoint_dir) / f"checkpoint_epoch_{epoch}.pt"))
-    return checkpoints
-
-
-def _print_checkpoint_ranking(result: dict) -> None:
-    ranking = result.get("checkpoint_ranking", [])
-    if not ranking:
-        return
-    print("\nCheckpoint ranking")
-    print("=" * 96)
-    print(f"{'rank':<5} {'label':<16} {'success':<10} {'mean_return':<12} {'mean_turns':<11} checkpoint")
-    for index, row in enumerate(ranking, start=1):
-        print(
-            f"{index:<5} "
-            f"{str(row.get('label', '')):<16} "
-            f"{float(row.get('success_rate', 0.0)):<10.3f} "
-            f"{float(row.get('mean_return', 0.0)):<12.3f} "
-            f"{float(row.get('mean_turns', 0.0)):<11.3f} "
-            f"{row.get('checkpoint')}"
-        )
-
-
 @app.local_entrypoint()
 def main(
-    trailblazer_checkpoint: str = "/root/outputs/policies/trailblazer_ppo/checkpoint_epoch_9.pt",
-    checkpoint_dir: str | None = None,
-    checkpoint_epochs: str | None = None,
     eval_name: str | None = None,
-    remote_output_dir: str = "/root/outputs/eval",
-    wait_for_result: bool = False,
-    num_episodes: int = 10,
+    fixed_policy_checkpoint: str = "/root/outputs/policies/trailblazer_ppo/fixed_continued_from_epoch19_15epochs/checkpoint_epoch_34.pt",
+    coevolved_policy_checkpoint: str = "/root/outputs/coevolution/coevolve_robust_from_epoch19_3x5/cycle_003/policy/checkpoint_epoch_34.pt",
+    evolved_victim_adapter: str = "/root/outputs/coevolution/coevolve_robust_from_epoch19_3x5/cycle_003/victim_adapter",
+    num_episodes: int = 50,
     max_turns: int = 3,
     seed: int = 0,
-    seed_prompt_file: str = "/root/data/seed_prompts.json",
+    seed_prompt_file: str = "/root/data/seed_prompts_test.json",
+    reward_backend: str = "wildguard",
     victim_history_turns: int | None = None,
-    reward_backend: str | None = None,
     use_template_mutator: bool = False,
-    attacker_lora_adapter: str | None = None,
-    victim_lora_adapter: str | None = None,
-    verbose: bool = True,
-    show_text: bool = False,
-    text_preview_chars: int = 240,
     wandb_project: str | None = None,
-    output_dir: str = "outputs/eval",
-    save_local: bool = False,
+    remote_output_dir: str = "/root/outputs/eval_matrix",
+    skip_fixed_base: bool = False,
+    wait_for_result: bool = False,
 ) -> None:
-    sweep_checkpoints = (
-        _parse_checkpoint_epochs(checkpoint_dir, checkpoint_epochs)
-        if checkpoint_dir and checkpoint_epochs
-        else None
-    )
-    selected_checkpoint = sweep_checkpoints[0] if sweep_checkpoints else trailblazer_checkpoint
-    resolved_eval_name = eval_name or f"eval_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    resolved_eval_name = eval_name or f"eval_matrix_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     call_kwargs = {
-        "trailblazer_checkpoint": selected_checkpoint,
-        "trailblazer_checkpoints": sweep_checkpoints,
+        "eval_name": resolved_eval_name,
+        "fixed_policy_checkpoint": fixed_policy_checkpoint,
+        "coevolved_policy_checkpoint": coevolved_policy_checkpoint,
+        "evolved_victim_adapter": evolved_victim_adapter,
         "num_episodes": num_episodes,
         "max_turns": max_turns,
         "seed": seed,
         "seed_prompt_file": seed_prompt_file,
-        "config_path": "/root/configs/default.json",
-        "victim_history_turns": victim_history_turns,
         "reward_backend": reward_backend,
+        "victim_history_turns": victim_history_turns,
         "use_template_mutator": use_template_mutator,
-        "attacker_lora_adapter": attacker_lora_adapter,
-        "victim_lora_adapter": victim_lora_adapter,
-        "verbose": verbose,
-        "show_text": show_text,
-        "text_preview_chars": text_preview_chars,
-        "remote_output_dir": remote_output_dir,
-        "eval_name": resolved_eval_name,
         "wandb_project": wandb_project,
+        "remote_output_dir": remote_output_dir,
+        "skip_fixed_base": skip_fixed_base,
     }
-    if not wait_for_result:
-        function_call = evaluate_trailblazer_remote.spawn(**call_kwargs)
-        call_id = getattr(function_call, "object_id", None) or getattr(function_call, "call_id", None)
-        print("submitted TrailBlazer eval without waiting for the result")
-        if call_id:
-            print("function call id:", call_id)
-        if checkpoint_dir and checkpoint_epochs:
-            print("checkpoint dir:", checkpoint_dir)
-            print("checkpoint epochs:", checkpoint_epochs)
-        else:
-            print("checkpoint:", selected_checkpoint)
-        print("remote output dir:", remote_output_dir)
-        print("remote summary path:", f"{remote_output_dir}/{resolved_eval_name}.json")
-        print("Modal volume: cs224r-redteam-rl-data")
-        print("Use `modal app logs cs224r-trailblazer-eval` to follow progress.")
+    if wait_for_result:
+        result = run_eval_matrix_remote.remote(**call_kwargs)
+        print(json.dumps(result, indent=2))
         return
 
-    result = evaluate_trailblazer_remote.remote(**call_kwargs)
-    _print_checkpoint_ranking(result)
-    print(json.dumps(result, indent=2))
-    print("\nsaved comparison results to Modal volume cs224r-redteam-rl-data")
-    print("remote output path: /root/outputs/eval")
-    if save_local:
-        os.makedirs(output_dir, exist_ok=True)
-        local_summary_path = Path(output_dir) / "modal_trailblazer_eval_summary.json"
-        with local_summary_path.open("w", encoding="utf-8") as f:
-            json.dump(result, f, indent=2)
-            f.write("\n")
-        print(f"saved local summary to {local_summary_path}")
+    function_call = run_eval_matrix_remote.spawn(**call_kwargs)
+    call_id = getattr(function_call, "object_id", None) or getattr(function_call, "call_id", None)
+    if skip_fixed_base:
+        print("submitted eval matrix missing cells only, without waiting for the result")
+        print("skipping already-run cell: fixed_policy__base_victim")
+    else:
+        print("submitted 2x2 eval matrix without waiting for the result")
+    if call_id:
+        print("function call id:", call_id)
+    print("eval name:", resolved_eval_name)
+    print("remote output dir:", f"{remote_output_dir}/{resolved_eval_name}")
+    print("remote summary path:", f"{remote_output_dir}/{resolved_eval_name}/matrix_summary.json")
+    print("Modal volume: cs224r-redteam-rl-data")
+    print("Use `modal app logs cs224r-eval-matrix` to follow progress.")

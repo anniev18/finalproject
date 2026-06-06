@@ -101,6 +101,7 @@ def _run_episode_impl(
     from pathlib import Path
 
     os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+    _ensure_hf_token_env()
     sys.path.insert(0, "/root")
 
     from redteam_rl.attacker import Attacker, EvolvingAttacker
@@ -168,6 +169,7 @@ def _run_episode_impl(
         qwen_judge_config=cfg.qwen_judge_config(),
         llama_guard_config=cfg.llama_guard_config(),
         wildguard_config=cfg.wildguard_config(),
+        reference_similarity_config=cfg.reference_similarity_config(),
     )
     auxiliary_reward_models = {
         backend: build_reward_model(
@@ -176,6 +178,7 @@ def _run_episode_impl(
             qwen_judge_config=cfg.qwen_judge_config(),
             llama_guard_config=cfg.llama_guard_config(),
             wildguard_config=cfg.wildguard_config(),
+            reference_similarity_config=cfg.reference_similarity_config(),
         )
         for backend in (aux_reward_backends or [])
     }
@@ -298,6 +301,19 @@ def _write_remote_episode_results(result: dict, remote_output_dir: str) -> tuple
     return str(path), str(full_inputs_path)
 
 
+def _ensure_hf_token_env() -> None:
+    if not os.environ.get("HF_TOKEN"):
+        for alternate_name in ("HUGGINGFACE_HUB_TOKEN", "HF_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+            alternate_value = os.environ.get(alternate_name)
+            if alternate_value:
+                os.environ["HF_TOKEN"] = alternate_value
+                break
+    if os.environ.get("HF_TOKEN"):
+        os.environ.setdefault("HUGGINGFACE_HUB_TOKEN", os.environ["HF_TOKEN"])
+        os.environ.setdefault("HF_HUB_TOKEN", os.environ["HF_TOKEN"])
+    print(f"HF_TOKEN available: {bool(os.environ.get('HF_TOKEN'))}", flush=True)
+
+
 def _strip_full_inputs(result: dict) -> dict:
     stripped = {
         "seed_prompt": result["seed_prompt"],
@@ -332,6 +348,8 @@ def _judge_model_name(cfg, reward_backend: str) -> str:
         return cfg.models.llama_guard
     if reward_backend == "wildguard":
         return cfg.models.wildguard
+    if reward_backend in {"reference_similarity", "reference_similarity_raw", "reference_similarity_binary"}:
+        return cfg.reference_similarity_config().embedding_model_name
     return "fake"
 
 

@@ -59,6 +59,8 @@ class RedTeamEnv:
             metadata["victim_input"] = self.victim.last_debug_prompt
         if hasattr(self.reward_model, "last_labels") and self.reward_model.last_labels:
             metadata["judge_label"] = self.reward_model.last_labels[-1]
+        if hasattr(self.reward_model, "last_scores") and self.reward_model.last_scores:
+            metadata["reward_score"] = self.reward_model.last_scores[-1]
         auxiliary_scores = {
             name: model.score(attack_step.prompt, victim_response, self.state)
             for name, model in self.auxiliary_reward_models.items()

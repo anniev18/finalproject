@@ -21,6 +21,9 @@ from redteam_rl.actions import ACTIONS, AttackAction
 from redteam_rl.types import DialogueTurn, EpisodeState
 
 
+_EMBEDDER_CACHE: dict[tuple[str, int, str, bool], "TextEmbedder"] = {}
+
+
 REFUSAL_MARKERS = (
     "i can't",
     "i cannot",
@@ -158,7 +161,7 @@ def build_state_features(
 
     q_embedding: list[float] = []
     if include_embeddings:
-        active_embedder = embedder or TextEmbedder(cfg)
+        active_embedder = embedder or get_text_embedder(cfg)
         texts = [q_text, *[features.h_text for features in history_features]]
         embeddings = active_embedder.embed(texts)
         q_embedding = embeddings[0]
@@ -180,6 +183,22 @@ def build_state_features(
         ]
 
     return StateFeatures(q_text=q_text, q_embedding=q_embedding, history=history_features)
+
+
+def get_text_embedder(config: StateFeatureConfig) -> TextEmbedder:
+    """Return a process-local cached embedder for PPO state features."""
+
+    key = (
+        config.embedding_model_name,
+        config.max_length,
+        TextEmbedder._resolve_device(config.device),
+        config.normalize_embeddings,
+    )
+    embedder = _EMBEDDER_CACHE.get(key)
+    if embedder is None:
+        embedder = TextEmbedder(config)
+        _EMBEDDER_CACHE[key] = embedder
+    return embedder
 
 
 def format_query_text(state: EpisodeState) -> str:

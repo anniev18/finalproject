@@ -127,6 +127,8 @@ def ppo_update(policy: TrailBlazerPolicy, batch, optimizer, clip_eps=0.2, value_
     policy_losses = []
     value_losses = []
     entropies = []
+    approx_kls = []
+    clip_fractions = []
 
     # recompute log_probs and values under current policy
     for i, state in enumerate(all_states):
@@ -137,7 +139,8 @@ def ppo_update(policy: TrailBlazerPolicy, batch, optimizer, clip_eps=0.2, value_
         new_log_prob = dist.log_prob(action)
         entropy = dist.entropy()
 
-        ratio = torch.exp(new_log_prob - torch.tensor(old_log_probs[i], device=device))
+        old_log_prob = torch.tensor(old_log_probs[i], device=device)
+        ratio = torch.exp(new_log_prob - old_log_prob)
         A = advantages[i]
         surr1 = ratio * A
         surr2 = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * A
@@ -146,11 +149,25 @@ def ppo_update(policy: TrailBlazerPolicy, batch, optimizer, clip_eps=0.2, value_
         policy_losses.append(policy_loss)
         value_losses.append(value_loss)
         entropies.append(entropy)
+        approx_kls.append(old_log_prob - new_log_prob)
+        clip_fractions.append((torch.abs(ratio - 1.0) > clip_eps).float())
 
-    loss = torch.stack(policy_losses).mean() + value_coef * torch.stack(value_losses).mean() - ent_coef * torch.stack(entropies).mean()
+    actor_loss = torch.stack(policy_losses).mean()
+    critic_loss = torch.stack(value_losses).mean()
+    entropy = torch.stack(entropies).mean()
+    approx_kl = torch.stack(approx_kls).mean()
+    clip_fraction = torch.stack(clip_fractions).mean()
+    loss = actor_loss + value_coef * critic_loss - ent_coef * entropy
     loss.backward()
     optimizer.step()
-    return loss.item()
+    return {
+        "loss": float(loss.item()),
+        "actor_loss": float(actor_loss.item()),
+        "critic_loss": float(critic_loss.item()),
+        "entropy": float(entropy.item()),
+        "approx_kl": float(approx_kl.item()),
+        "clip_fraction": float(clip_fraction.item()),
+    }
 
 
 def main():
@@ -169,8 +186,16 @@ def main():
 
     for epoch in range(args.epochs):
         batch = collect_episodes(policy, mutator, victim, reward, args.episodes_per_batch, args.max_turns)
-        loss_value = ppo_update(policy, batch, optimizer)
-        print(f"epoch={epoch} loss={loss_value:.6f}")
+        metrics = ppo_update(policy, batch, optimizer)
+        print(
+            f"epoch={epoch} "
+            f"loss={metrics['loss']:.6f} "
+            f"actor_loss={metrics['actor_loss']:.6f} "
+            f"critic_loss={metrics['critic_loss']:.6f} "
+            f"entropy={metrics['entropy']:.6f} "
+            f"approx_kl={metrics['approx_kl']:.6f} "
+            f"clip_fraction={metrics['clip_fraction']:.3f}"
+        )
         # checkpoint
         checkpoint_path = os.path.join(args.save_dir, f"checkpoint_epoch_{epoch}.pt")
         policy.save_checkpoint(checkpoint_path)

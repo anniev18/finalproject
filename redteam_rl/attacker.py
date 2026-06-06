@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Protocol
 
 from redteam_rl.actions import AttackAction
@@ -49,7 +50,30 @@ class Attacker:
 
     def act(self, state: EpisodeState) -> AttackStep:
         decision = self.policy.select_action(state)
-        # Support legacy policies that return an AttackAction directly.
+        action, history_weights = self._decision_action_and_weights(decision)
+        raw_template = self.mutator.mutate(action, state, history_weights=history_weights)
+        return self._build_attack_step(state, decision, raw_template)
+
+    def act_batch(self, states: list[EpisodeState]) -> list[AttackStep]:
+        decisions = [self.policy.select_action(state) for state in states]
+        items = []
+        for decision, state in zip(decisions, states):
+            action, history_weights = self._decision_action_and_weights(decision)
+            items.append((action, state, history_weights))
+        if hasattr(self.mutator, "mutate_batch"):
+            raw_templates = self.mutator.mutate_batch(items)
+        else:
+            raw_templates = [
+                self.mutator.mutate(action, state, history_weights=history_weights)
+                for action, state, history_weights in items
+            ]
+        return [
+            self._build_attack_step(state, decision, raw_template, debug_prompt_index=index)
+            for index, (state, decision, raw_template) in enumerate(zip(states, decisions, raw_templates))
+        ]
+
+    @staticmethod
+    def _decision_action_and_weights(decision) -> tuple[AttackAction, list[float] | None]:
         has_rich_decision = hasattr(decision, "action")
         action = decision.action if has_rich_decision else decision
         history_weights = (
@@ -57,7 +81,17 @@ class Attacker:
             if has_rich_decision and hasattr(decision, "attention_weights")
             else None
         )
-        raw_template = self.mutator.mutate(action, state, history_weights=history_weights)
+        return action, history_weights
+
+    def _build_attack_step(
+        self,
+        state: EpisodeState,
+        decision,
+        raw_template: str,
+        debug_prompt_index: int | None = None,
+    ) -> AttackStep:
+        has_rich_decision = hasattr(decision, "action")
+        action = decision.action if has_rich_decision else decision
         mutator_refused = looks_like_mutator_refusal(raw_template)
         invalid_template = "{REQUEST}" not in raw_template or not is_valid_attack_template(raw_template)
         fallback_used = mutator_refused or invalid_template
@@ -74,7 +108,10 @@ class Attacker:
         metadata["mutator_invalid_template"] = invalid_template
         metadata["mutator_fallback_template"] = state.current_template if fallback_used else None
         metadata["mutator_fallback_used"] = fallback_used
-        if hasattr(self.mutator, "last_debug_prompt") and self.mutator.last_debug_prompt:
+        debug_prompts = getattr(self.mutator, "last_debug_prompts", [])
+        if debug_prompt_index is not None and debug_prompt_index < len(debug_prompts):
+            metadata["mutator_input"] = debug_prompts[debug_prompt_index]
+        elif hasattr(self.mutator, "last_debug_prompt") and self.mutator.last_debug_prompt:
             metadata["mutator_input"] = self.mutator.last_debug_prompt
         if hasattr(self.mutator, "lora_adapter_path") and self.mutator.lora_adapter_path:
             metadata["attacker_adapter"] = str(self.mutator.lora_adapter_path)
@@ -132,6 +169,13 @@ class EvolvingAttacker(Attacker):
         self.adapter_history.append(path)
         self.mutator.set_lora_adapter(
             path,
-            lora_name=f"attacker_adapter_round_{self.round}",
+            lora_name=f"attacker_{_adapter_label(path)}_round_{self.round}",
             lora_id=self.round,
         )
+
+
+def _adapter_label(path: Path) -> str:
+    parts = [part for part in path.parts[-4:] if part not in {"/", "root", "outputs"}]
+    label = "__".join(parts) or path.name or "adapter"
+    label = re.sub(r"[^A-Za-z0-9_]+", "_", label).strip("_")
+    return label[:96] or "adapter"

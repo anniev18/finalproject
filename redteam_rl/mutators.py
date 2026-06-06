@@ -60,6 +60,17 @@ class TemplateMutator:
         del history_weights
         return deterministic_template_mutation(action, state.current_template)
 
+    def mutate_batch(
+        self,
+        items: list[tuple[AttackAction, EpisodeState] | tuple[AttackAction, EpisodeState, list[float] | None]],
+    ) -> list[str]:
+        outputs = []
+        for item in items:
+            action, state = item[0], item[1]
+            history_weights = item[2] if len(item) > 2 else None
+            outputs.append(self.mutate(action, state, history_weights=history_weights))
+        return outputs
+
 
 class LLMMutator:
     """vLLM-backed mutator for turning a chosen action into text.
@@ -84,6 +95,7 @@ class LLMMutator:
         self.history_encoder = history_encoder or HistoryEncoder()
         self.capture_debug_prompt = capture_debug_prompt
         self.last_debug_prompt: str | None = None
+        self.last_debug_prompts: list[str] = []
         self.lora_adapter_path = Path(lora_adapter_path) if lora_adapter_path else None
         self.lora_name = lora_name
         self.lora_id = lora_id
@@ -134,6 +146,7 @@ class LLMMutator:
                 action, state, history_weights = item
             prompts.append(self._format_prompt(action, state, history_weights=history_weights))
         self.last_debug_prompt = prompts[0] if self.capture_debug_prompt and prompts else None
+        self.last_debug_prompts = prompts if self.capture_debug_prompt else []
         generate_kwargs = {"use_tqdm": False}
         if self.lora_adapter_path is not None:
             from vllm.lora.request import LoRARequest
