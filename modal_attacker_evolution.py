@@ -35,6 +35,7 @@ def run_attacker_evolution_remote(
     victim_version: str | None = None,
     attacker_version: str | None = None,
     max_bank_episodes: int = 200,
+    example_source: str = "legacy_message",
     verify_adapter_update: bool = False,
 ) -> dict:
     os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
@@ -49,19 +50,40 @@ def run_attacker_evolution_remote(
         attacker_examples_from_trajectory_bank,
         fine_tune_attacker_lora,
     )
+    from redteam_rl.attacker_training_data import (
+        FilteredAttackerExampleConfig,
+        filtered_template_examples_from_trajectory_bank,
+    )
     from redteam_rl.config import load_config
     from redteam_rl.orchestration import verify_adapter_update as verify_adapter
     from redteam_rl.versioning import new_run_id
 
     cfg = load_config(config_path)
     run_id = new_run_id("modal_attacker_evolution")
-    examples = attacker_examples_from_trajectory_bank(
-        trajectory_bank,
-        min_reward=min_reward,
-        victim_version=victim_version,
-        attacker_version=attacker_version,
-        limit=max_bank_episodes,
-    )
+    if example_source not in {"legacy_message", "filtered_template"}:
+        raise ValueError("example_source must be legacy_message or filtered_template")
+
+    filter_stats = None
+    if example_source == "filtered_template":
+        filtered_result = filtered_template_examples_from_trajectory_bank(
+            trajectory_bank,
+            config=FilteredAttackerExampleConfig(
+                min_reward=min_reward,
+                victim_version=victim_version,
+                attacker_version=attacker_version,
+            ),
+            limit=max_bank_episodes,
+        )
+        examples = filtered_result.examples
+        filter_stats = filtered_result.stats
+    else:
+        examples = attacker_examples_from_trajectory_bank(
+            trajectory_bank,
+            min_reward=min_reward,
+            victim_version=victim_version,
+            attacker_version=attacker_version,
+            limit=max_bank_episodes,
+        )
 
     adapter_path = None
     if examples:
@@ -85,6 +107,8 @@ def run_attacker_evolution_remote(
         "min_reward": min_reward,
         "victim_version_filter": victim_version,
         "attacker_version_filter": attacker_version,
+        "example_source": example_source,
+        "filter_stats": filter_stats,
         "adapter_path": str(adapter_path) if adapter_path else None,
         "adapter_verification": verification,
         "examples": [asdict(example) for example in examples[:10]],
@@ -107,6 +131,7 @@ def main(
     victim_version: str | None = None,
     attacker_version: str | None = None,
     max_bank_episodes: int = 200,
+    example_source: str = "legacy_message",
     verify_adapter_update: bool = False,
     save_local: bool = False,
     output_dir: str = "outputs/attacker_rounds",
@@ -117,6 +142,7 @@ def main(
         victim_version=victim_version,
         attacker_version=attacker_version,
         max_bank_episodes=max_bank_episodes,
+        example_source=example_source,
         verify_adapter_update=verify_adapter_update,
     )
     print(json.dumps(result, indent=2))
@@ -130,4 +156,3 @@ def main(
             json.dump(result, f, indent=2)
             f.write("\n")
         print(f"saved local summary to {local_summary_path}")
-

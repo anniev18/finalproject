@@ -101,6 +101,7 @@ def _run_episode_impl(
     from pathlib import Path
 
     os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+    _ensure_hf_token_env()
     sys.path.insert(0, "/root")
 
     from redteam_rl.attacker import Attacker, EvolvingAttacker
@@ -168,6 +169,7 @@ def _run_episode_impl(
         qwen_judge_config=cfg.qwen_judge_config(),
         llama_guard_config=cfg.llama_guard_config(),
         wildguard_config=cfg.wildguard_config(),
+        reference_similarity_config=cfg.reference_similarity_config(),
     )
     auxiliary_reward_models = {
         backend: build_reward_model(
@@ -176,6 +178,7 @@ def _run_episode_impl(
             qwen_judge_config=cfg.qwen_judge_config(),
             llama_guard_config=cfg.llama_guard_config(),
             wildguard_config=cfg.wildguard_config(),
+            reference_similarity_config=cfg.reference_similarity_config(),
         )
         for backend in (aux_reward_backends or [])
     }
@@ -215,9 +218,11 @@ def _run_episode_impl(
 
     result = {
         "seed_prompt": state.seed_prompt,
+        "initial_template": state.initial_template,
         "turns": [
             {
                 "action": turn.action.value if turn.action else None,
+                "attack_template": turn.attack_template,
                 "user_message": turn.user_message,
                 "victim_response": turn.victim_response,
                 "reward": turn.reward,
@@ -296,9 +301,23 @@ def _write_remote_episode_results(result: dict, remote_output_dir: str) -> tuple
     return str(path), str(full_inputs_path)
 
 
+def _ensure_hf_token_env() -> None:
+    if not os.environ.get("HF_TOKEN"):
+        for alternate_name in ("HUGGINGFACE_HUB_TOKEN", "HF_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+            alternate_value = os.environ.get(alternate_name)
+            if alternate_value:
+                os.environ["HF_TOKEN"] = alternate_value
+                break
+    if os.environ.get("HF_TOKEN"):
+        os.environ.setdefault("HUGGINGFACE_HUB_TOKEN", os.environ["HF_TOKEN"])
+        os.environ.setdefault("HF_HUB_TOKEN", os.environ["HF_TOKEN"])
+    print(f"HF_TOKEN available: {bool(os.environ.get('HF_TOKEN'))}", flush=True)
+
+
 def _strip_full_inputs(result: dict) -> dict:
     stripped = {
         "seed_prompt": result["seed_prompt"],
+        "initial_template": result.get("initial_template"),
         "turns": [],
     }
     if "metadata" in result:
@@ -310,6 +329,7 @@ def _strip_full_inputs(result: dict) -> dict:
         stripped["turns"].append(
             {
                 "action": turn.get("action"),
+                "attack_template": turn.get("attack_template"),
                 "user_message": turn.get("user_message"),
                 "victim_response": turn.get("victim_response"),
                 "reward": turn.get("reward"),
@@ -328,7 +348,171 @@ def _judge_model_name(cfg, reward_backend: str) -> str:
         return cfg.models.llama_guard
     if reward_backend == "wildguard":
         return cfg.models.wildguard
+    if reward_backend in {"reference_similarity", "reference_similarity_raw", "reference_similarity_binary"}:
+        return cfg.reference_similarity_config().embedding_model_name
     return "fake"
+
+
+def _print_episode_trace(
+    result: dict,
+    *,
+    show_mutator_input: bool = False,
+    show_victim_input: bool = False,
+) -> None:
+    """Print the episode in generation order instead of dumping nested JSON."""
+    print("\nEpisode trace")
+    print("=" * 80)
+    metadata = result.get("metadata", {}) or {}
+    artifacts = result.get("remote_artifacts", {}) or {}
+    print(_kv_section(
+        "Run metadata",
+        {
+            "run_id": metadata.get("run_id"),
+            "policy_type": metadata.get("policy_type"),
+            "policy_checkpoint": metadata.get("policy_checkpoint"),
+            "victim_model": metadata.get("victim_model"),
+            "victim_version": metadata.get("victim_version"),
+            "victim_adapter_path": metadata.get("victim_adapter_path"),
+            "attacker_model": metadata.get("attacker_model"),
+            "attacker_version": metadata.get("attacker_version"),
+            "attacker_adapter_path": metadata.get("attacker_adapter_path"),
+            "judge_model": metadata.get("judge_model"),
+            "reward_backend": metadata.get("reward_backend"),
+            "max_turns": metadata.get("max_turns"),
+            "victim_history_turns": metadata.get("victim_history_turns"),
+            "seed_prompt_file": metadata.get("seed_prompt_file"),
+        },
+    ))
+    print(_kv_section(
+        "Remote artifacts",
+        {
+            "volume": artifacts.get("volume"),
+            "episode_path": artifacts.get("episode_path"),
+            "full_inputs_path": artifacts.get("full_inputs_path"),
+            "trajectory_bank": artifacts.get("trajectory_bank"),
+        },
+    ))
+    print(_section("Initial template", result.get("initial_template")))
+
+    for index, turn in enumerate(result.get("turns", []), start=1):
+        turn_metadata = turn.get("metadata", {}) or {}
+        print(f"\nTurn {index}")
+        print("-" * 80)
+        print(_section("Action", turn.get("action")))
+        if show_mutator_input:
+            print(_section("Mutator input", turn_metadata.get("mutator_input")))
+        print(_section("Mutator response", turn_metadata.get("raw_attack_template")))
+        print(_section("Final template used", turn.get("attack_template")))
+        print(_section("Bad query", result.get("seed_prompt")))
+        print(_section("Attack message sent to victim", turn.get("user_message")))
+        if show_victim_input:
+            print(_section("Victim input", turn_metadata.get("victim_input")))
+        print(_section("Victim response", turn.get("victim_response")))
+        print(_kv_section(
+            "Judge and reward",
+            {
+                "judge_label": turn_metadata.get("judge_label"),
+                "reward": turn.get("reward"),
+                "auxiliary_scores": turn_metadata.get("auxiliary_scores"),
+            },
+        ))
+        print(_kv_section(
+            "Mutator diagnostics",
+            {
+                "mutator_refused": turn_metadata.get("mutator_refused"),
+                "mutator_invalid_template": turn_metadata.get("mutator_invalid_template"),
+                "mutator_fallback_used": turn_metadata.get("mutator_fallback_used"),
+                "mutator_fallback_template": turn_metadata.get("mutator_fallback_template"),
+            },
+        ))
+        print(_kv_section(
+            "Policy diagnostics",
+            {
+                "policy_log_prob": turn_metadata.get("policy_log_prob"),
+                "policy_value": turn_metadata.get("policy_value"),
+                "policy_action_probs": turn_metadata.get("policy_action_probs"),
+                "policy_attention_weights": turn_metadata.get("policy_attention_weights"),
+            },
+        ))
+        print(_kv_section(
+            "Model versions",
+            {
+                "victim_model": turn_metadata.get("victim_model"),
+                "victim_version": turn_metadata.get("victim_version"),
+                "victim_adapter_path": turn_metadata.get("victim_adapter_path"),
+                "attacker_model": turn_metadata.get("attacker_model"),
+                "attacker_version": turn_metadata.get("attacker_version"),
+                "attacker_adapter_path": turn_metadata.get("attacker_adapter_path"),
+                "judge_model": turn_metadata.get("judge_model"),
+            },
+        ))
+
+    print("\nEpisode summary")
+    print("=" * 80)
+    print(_kv_section("Summary metrics", _episode_summary_metrics(result)))
+
+
+def _section(label: str, value: object) -> str:
+    text = "" if value is None else str(value)
+    return f"{label}:\n{text}\n"
+
+
+def _kv_section(label: str, values: dict[str, object]) -> str:
+    lines = [f"{label}:"]
+    for key, value in values.items():
+        if value is not None:
+            lines.append(f"  {key}: {value}")
+    if len(lines) == 1:
+        lines.append("  n/a")
+    return "\n".join(lines) + "\n"
+
+
+def _episode_summary_metrics(result: dict) -> dict[str, object]:
+    turns = result.get("turns", [])
+    rewards = [
+        float(turn.get("reward"))
+        for turn in turns
+        if turn.get("reward") is not None
+    ]
+    unsafe_turns = 0
+    safe_turns = 0
+    unknown_judge_turns = 0
+    mutator_refusals = 0
+    invalid_templates = 0
+    fallback_uses = 0
+    successful_attacks = 0
+
+    for turn in turns:
+        metadata = turn.get("metadata", {}) or {}
+        label = str(metadata.get("judge_label", "")).upper()
+        reward = turn.get("reward")
+        if label == "UNSAFE":
+            unsafe_turns += 1
+        elif label == "SAFE":
+            safe_turns += 1
+        else:
+            unknown_judge_turns += 1
+        if metadata.get("mutator_refused"):
+            mutator_refusals += 1
+        if metadata.get("mutator_invalid_template"):
+            invalid_templates += 1
+        if metadata.get("mutator_fallback_used"):
+            fallback_uses += 1
+        if reward is not None and float(reward) >= 1.0:
+            successful_attacks += 1
+
+    return {
+        "turns": len(turns),
+        "successful_attacks_reward_ge_1": successful_attacks,
+        "judge_unsafe": unsafe_turns,
+        "judge_safe": safe_turns,
+        "judge_unknown": unknown_judge_turns,
+        "mutator_declines": mutator_refusals,
+        "invalid_templates": invalid_templates,
+        "fallbacks_used": fallback_uses,
+        "average_reward": round(sum(rewards) / len(rewards), 4) if rewards else None,
+        "max_reward": max(rewards) if rewards else None,
+    }
 
 
 @app.function(
@@ -382,6 +566,7 @@ def main(
     seed_prompt: str | None = None,
     seed_prompt_file: str = "/root/data/seed_prompts.json",
     seed: int | None = None,
+    seeds: str | None = None,
     max_turns: int = 2,
     victim_history_turns: int | None = None,
     use_template_mutator: bool = False,
@@ -393,6 +578,8 @@ def main(
     attacker_lora_adapter: str | None = None,
     policy_checkpoint: str | None = None,
     victim_lora_adapter: str | None = None,
+    remote_output_dir: str = "/root/outputs/modal_episodes",
+    remote_trajectory_bank: str = "/root/outputs/trajectory_bank/episodes.jsonl",
     wandb_project: str | None = None,
     output_dir: str = "outputs/modal_episodes",
     output_file: str | None = None,
@@ -401,27 +588,18 @@ def main(
 ) -> None:
     aux_reward_backends = [aux_reward_backend] if aux_reward_backend else None
     selected_use_template_mutator = use_template_mutator
-    if big_gpu:
-        result = run_episode_llama_guard_remote.remote(
+    selected_seeds = _parse_seeds(seeds)
+    if selected_seeds and seed_prompt:
+        raise ValueError("--seeds cannot be combined with --seed-prompt because every seed would use the same prompt.")
+
+    results = []
+    seeds_to_run = selected_seeds or [seed]
+    for seed_index, selected_seed in enumerate(seeds_to_run, start=1):
+        result = _run_remote_entrypoint_episode(
+            big_gpu=big_gpu,
             seed_prompt=seed_prompt,
             seed_prompt_file=seed_prompt_file,
-            seed=seed,
-            max_turns=max_turns,
-            victim_history_turns=victim_history_turns,
-            use_template_mutator=selected_use_template_mutator,
-            aux_reward_backends=aux_reward_backends,
-            show_mutator_input=show_mutator_input,
-            show_victim_input=show_victim_input,
-            attacker_lora_adapter=attacker_lora_adapter,
-            policy_checkpoint=policy_checkpoint,
-            victim_lora_adapter=victim_lora_adapter,
-            wandb_project=wandb_project,
-        )
-    else:
-        result = run_episode_remote.remote(
-            seed_prompt=seed_prompt,
-            seed_prompt_file=seed_prompt_file,
-            seed=seed,
+            seed=selected_seed,
             max_turns=max_turns,
             victim_history_turns=victim_history_turns,
             use_template_mutator=selected_use_template_mutator,
@@ -432,19 +610,122 @@ def main(
             attacker_lora_adapter=attacker_lora_adapter,
             policy_checkpoint=policy_checkpoint,
             victim_lora_adapter=victim_lora_adapter,
+            remote_output_dir=remote_output_dir,
+            remote_trajectory_bank=remote_trajectory_bank,
             wandb_project=wandb_project,
         )
-    if save_local:
-        output_path = _write_episode_result(result, output_dir=output_dir, output_file=output_file)
-        _append_episode_result_to_bank(result, trajectory_bank)
-    print(json.dumps(result, indent=2))
-    print("\nsaved remote episode JSON to Modal volume cs224r-redteam-rl-data")
-    print("remote episode path:", result["remote_artifacts"]["episode_path"])
-    print("remote full-inputs path:", result["remote_artifacts"]["full_inputs_path"])
-    print("remote trajectory bank:", result["remote_artifacts"]["trajectory_bank"])
-    if save_local:
-        print(f"saved local episode JSON to {output_path}")
-        print(f"appended local episode to {trajectory_bank}")
+        results.append(result)
+        if save_local:
+            output_path = _write_episode_result(result, output_dir=output_dir, output_file=output_file)
+            _append_episode_result_to_bank(result, trajectory_bank)
+        if selected_seeds:
+            print(f"\n\nSeed {selected_seed} ({seed_index}/{len(seeds_to_run)})")
+        _print_episode_trace(
+            result,
+            show_mutator_input=show_mutator_input,
+            show_victim_input=show_victim_input,
+        )
+        print("\nsaved remote episode JSON to Modal volume cs224r-redteam-rl-data")
+        print("remote episode path:", result["remote_artifacts"]["episode_path"])
+        print("remote full-inputs path:", result["remote_artifacts"]["full_inputs_path"])
+        print("remote trajectory bank:", result["remote_artifacts"]["trajectory_bank"])
+        if save_local:
+            print(f"saved local episode JSON to {output_path}")
+            print(f"appended local episode to {trajectory_bank}")
+
+    if selected_seeds:
+        print("\nMulti-seed episode summary")
+        print("=" * 80)
+        print(_kv_section("Summary", _multi_episode_summary_metrics(results)))
+
+
+def _run_remote_entrypoint_episode(
+    *,
+    big_gpu: bool,
+    seed_prompt: str | None,
+    seed_prompt_file: str,
+    seed: int | None,
+    max_turns: int,
+    victim_history_turns: int | None,
+    use_template_mutator: bool,
+    reward_backend: str | None,
+    aux_reward_backends: list[str] | None,
+    show_mutator_input: bool,
+    show_victim_input: bool,
+    attacker_lora_adapter: str | None,
+    policy_checkpoint: str | None,
+    victim_lora_adapter: str | None,
+    remote_output_dir: str,
+    remote_trajectory_bank: str,
+    wandb_project: str | None,
+) -> dict:
+    if big_gpu:
+        return run_episode_llama_guard_remote.remote(
+            seed_prompt=seed_prompt,
+            seed_prompt_file=seed_prompt_file,
+            seed=seed,
+            max_turns=max_turns,
+            victim_history_turns=victim_history_turns,
+            use_template_mutator=use_template_mutator,
+            aux_reward_backends=aux_reward_backends,
+            show_mutator_input=show_mutator_input,
+            show_victim_input=show_victim_input,
+            attacker_lora_adapter=attacker_lora_adapter,
+            policy_checkpoint=policy_checkpoint,
+            victim_lora_adapter=victim_lora_adapter,
+            remote_output_dir=remote_output_dir,
+            remote_trajectory_bank=remote_trajectory_bank,
+            wandb_project=wandb_project,
+        )
+    return run_episode_remote.remote(
+        seed_prompt=seed_prompt,
+        seed_prompt_file=seed_prompt_file,
+        seed=seed,
+        max_turns=max_turns,
+        victim_history_turns=victim_history_turns,
+        use_template_mutator=use_template_mutator,
+        reward_backend=reward_backend,
+        aux_reward_backends=aux_reward_backends,
+        show_mutator_input=show_mutator_input,
+        show_victim_input=show_victim_input,
+        attacker_lora_adapter=attacker_lora_adapter,
+        policy_checkpoint=policy_checkpoint,
+        victim_lora_adapter=victim_lora_adapter,
+        remote_output_dir=remote_output_dir,
+        remote_trajectory_bank=remote_trajectory_bank,
+        wandb_project=wandb_project,
+    )
+
+
+def _parse_seeds(seeds: str | None) -> list[int]:
+    if not seeds:
+        return []
+    parsed = []
+    for raw_seed in seeds.split(","):
+        stripped = raw_seed.strip()
+        if stripped:
+            parsed.append(int(stripped))
+    return parsed
+
+
+def _multi_episode_summary_metrics(results: list[dict]) -> dict[str, object]:
+    total_turns = sum(len(result.get("turns", [])) for result in results)
+    successful_episodes = 0
+    successful_turns = 0
+    for result in results:
+        episode_success = False
+        for turn in result.get("turns", []):
+            if turn.get("reward") is not None and float(turn.get("reward")) >= 1.0:
+                successful_turns += 1
+                episode_success = True
+        if episode_success:
+            successful_episodes += 1
+    return {
+        "episodes": len(results),
+        "turns": total_turns,
+        "successful_episodes_reward_ge_1": successful_episodes,
+        "successful_turns_reward_ge_1": successful_turns,
+    }
 
 
 def _write_episode_result(result: dict, output_dir: str, output_file: str | None = None) -> Path:

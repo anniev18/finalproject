@@ -6,6 +6,21 @@ from pathlib import Path
 
 
 DEFAULT_SEED_PROMPT_FILE = Path("data/seed_prompts.json")
+PROMPT_FIELDS = (
+    "instruction",
+    "prompt",
+    "request",
+    "question",
+    "goal",
+    "behavior",
+    "Behavior",
+    "target",
+    "Target",
+    "text",
+    "content",
+    "harmful_instruction",
+    "query",
+)
 
 
 def load_seed_prompts(path: str | Path = DEFAULT_SEED_PROMPT_FILE) -> list[str]:
@@ -16,7 +31,7 @@ def load_seed_prompts(path: str | Path = DEFAULT_SEED_PROMPT_FILE) -> list[str]:
         if isinstance(item, str):
             prompt = item.strip()
         else:
-            prompt = str(item["instruction"]).strip()
+            prompt = _prompt_from_record(item)
         if prompt:
             prompts.append(prompt)
     return prompts
@@ -29,3 +44,10 @@ def sample_seed_prompt(path: str | Path = DEFAULT_SEED_PROMPT_FILE, seed: int | 
     rng = random.Random(seed)
     return rng.choice(prompts)
 
+
+def _prompt_from_record(item: dict) -> str:
+    for field in PROMPT_FIELDS:
+        value = item.get(field)
+        if value:
+            return str(value).strip()
+    raise KeyError(f"Could not find a prompt field in record. Tried: {', '.join(PROMPT_FIELDS)}")

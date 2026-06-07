@@ -55,13 +55,31 @@ def parse_args() -> argparse.Namespace:
         "--reward-backend",
         type=str,
         default=None,
-        choices=["fake", "prompt_guard", "qwen_judge", "qwen_safety_judge", "llama_guard", "wildguard"],
+        choices=[
+            "fake",
+            "prompt_guard",
+            "qwen_judge",
+            "qwen_safety_judge",
+            "llama_guard",
+            "wildguard",
+            "reference_similarity",
+            "reference_similarity_raw",
+            "reference_similarity_binary",
+        ],
     )
     parser.add_argument(
         "--aux-reward-backend",
         action="append",
         default=[],
-        choices=["prompt_guard", "qwen_judge", "llama_guard", "wildguard"],
+        choices=[
+            "prompt_guard",
+            "qwen_judge",
+            "llama_guard",
+            "wildguard",
+            "reference_similarity",
+            "reference_similarity_raw",
+            "reference_similarity_binary",
+        ],
         help="Optional auxiliary scores to log without changing the main reward.",
     )
     parser.add_argument("--wandb-project", type=str, default=None, help="Optional Weights & Biases project name to log to")
@@ -77,6 +95,8 @@ def _judge_model_name(cfg, reward_backend: str) -> str:
         return cfg.models.llama_guard
     if reward_backend == "wildguard":
         return cfg.models.wildguard
+    if reward_backend in {"reference_similarity", "reference_similarity_raw", "reference_similarity_binary"}:
+        return cfg.reference_similarity_config().embedding_model_name
     return "fake"
 
 
@@ -138,6 +158,7 @@ def main() -> None:
             qwen_judge_config=cfg.qwen_judge_config(),
             llama_guard_config=cfg.llama_guard_config(),
             wildguard_config=cfg.wildguard_config(),
+            reference_similarity_config=cfg.reference_similarity_config(),
         )
     auxiliary_reward_models = {
         backend: build_reward_model(
@@ -146,6 +167,7 @@ def main() -> None:
             qwen_judge_config=cfg.qwen_judge_config(),
             llama_guard_config=cfg.llama_guard_config(),
             wildguard_config=cfg.wildguard_config(),
+            reference_similarity_config=cfg.reference_similarity_config(),
         )
         for backend in args.aux_reward_backend
     }

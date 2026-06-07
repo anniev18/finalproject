@@ -14,6 +14,10 @@ from redteam_rl.attacker_training import (
     create_dry_run_attacker_adapter,
     fine_tune_attacker_lora,
 )
+from redteam_rl.attacker_training_data import (
+    FilteredAttackerExampleConfig,
+    filtered_template_examples_from_trajectory_bank,
+)
 from redteam_rl.config import load_config
 from redteam_rl.orchestration import verify_adapter_update
 from redteam_rl.versioning import new_run_id
@@ -29,6 +33,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--victim-version", type=str, default=None)
     parser.add_argument("--attacker-version", type=str, default=None)
     parser.add_argument("--max-bank-episodes", type=int, default=200)
+    parser.add_argument(
+        "--example-source",
+        choices=("legacy_message", "filtered_template"),
+        default="legacy_message",
+        help="legacy_message keeps mutator_input->user_message; filtered_template uses valid mutator_input->raw_attack_template.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--verify-adapter-update", action="store_true")
     return parser.parse_args()
@@ -39,13 +49,27 @@ def main() -> None:
     cfg = load_config(args.config)
     run_id = new_run_id("attacker_evolution")
 
-    examples = attacker_examples_from_trajectory_bank(
-        args.trajectory_bank,
-        min_reward=args.min_reward,
-        victim_version=args.victim_version,
-        attacker_version=args.attacker_version,
-        limit=args.max_bank_episodes,
-    )
+    filter_stats = None
+    if args.example_source == "filtered_template":
+        filtered_result = filtered_template_examples_from_trajectory_bank(
+            args.trajectory_bank,
+            config=FilteredAttackerExampleConfig(
+                min_reward=args.min_reward,
+                victim_version=args.victim_version,
+                attacker_version=args.attacker_version,
+            ),
+            limit=args.max_bank_episodes,
+        )
+        examples = filtered_result.examples
+        filter_stats = filtered_result.stats
+    else:
+        examples = attacker_examples_from_trajectory_bank(
+            args.trajectory_bank,
+            min_reward=args.min_reward,
+            victim_version=args.victim_version,
+            attacker_version=args.attacker_version,
+            limit=args.max_bank_episodes,
+        )
 
     adapter_path = None
     if examples:
@@ -72,6 +96,8 @@ def main() -> None:
         "min_reward": args.min_reward,
         "victim_version_filter": args.victim_version,
         "attacker_version_filter": args.attacker_version,
+        "example_source": args.example_source,
+        "filter_stats": filter_stats,
         "adapter_path": str(adapter_path) if adapter_path else None,
         "adapter_verification": verification,
         "dry_run": args.dry_run,
@@ -91,4 +117,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

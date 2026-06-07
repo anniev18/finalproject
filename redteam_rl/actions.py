@@ -16,5 +16,13 @@ class AttackAction(str, Enum):
     CROSSOVER = "crossover"
 
 
-ACTIONS: tuple[AttackAction, ...] = tuple(AttackAction)
+TRAILBLAZER_ACTIONS: tuple[AttackAction, ...] = (
+    AttackAction.REPHRASE,
+    AttackAction.CROSSOVER,
+    AttackAction.GENERATE_SIMILAR,
+    AttackAction.SHORTEN,
+    AttackAction.EXPAND,
+)
 
+# Default RLbreaker/TrailBlazer baseline action space.
+ACTIONS: tuple[AttackAction, ...] = TRAILBLAZER_ACTIONS

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from redteam_rl.token_budget import fit_text_to_token_budget
 from redteam_rl.types import EpisodeState
 
 
@@ -30,7 +31,7 @@ class VictimConfig:
     temperature: float = 0.7
     top_p: float = 0.95
     max_tokens: int = 128
-    max_model_len: int = 4096
+    max_model_len: int = 8192
     tensor_parallel_size: int = 1
     gpu_memory_utilization: float = 0.3
     enforce_eager: bool = True
@@ -64,6 +65,7 @@ class VLLMVictim:
         self.lora_id = lora_id
         self.capture_debug_prompt = capture_debug_prompt
         self.last_debug_prompt: str | None = None
+        self.last_debug_prompts: list[str] = []
 
         self.tokenizer = AutoTokenizer.from_pretrained(config.model_name, padding_side="left")
         if self.tokenizer.pad_token_id is None:
@@ -106,13 +108,30 @@ class VLLMVictim:
         state: EpisodeState | None = None,
         victim_history_turns: int = 0,
     ) -> list[str]:
+        return self.respond_states_batch(
+            prompts,
+            [state] * len(prompts),
+            victim_history_turns=victim_history_turns,
+        )
+
+    def respond_states_batch(
+        self,
+        prompts: list[str],
+        states: list[EpisodeState | None],
+        victim_history_turns: int = 0,
+    ) -> list[str]:
+        if len(prompts) != len(states):
+            raise ValueError("prompts and states must have the same length.")
         formatted_prompts = [
-            self.format_prompt(prompt, state=state, victim_history_turns=victim_history_turns)
-            for prompt in prompts
+            self._fit_prompt(
+                self.format_prompt(prompt, state=state, victim_history_turns=victim_history_turns)
+            )
+            for prompt, state in zip(prompts, states)
         ]
         self.last_debug_prompt = (
             formatted_prompts[0] if self.capture_debug_prompt and formatted_prompts else None
         )
+        self.last_debug_prompts = formatted_prompts if self.capture_debug_prompt else []
         generate_kwargs = {"use_tqdm": False}
         if self.lora_adapter_path is not None:
             from vllm.lora.request import LoRARequest
@@ -151,6 +170,13 @@ class VLLMVictim:
             )
         except Exception:
             return prompt.rstrip()
+
+    def _fit_prompt(self, formatted_prompt: str) -> str:
+        return fit_text_to_token_budget(
+            self.tokenizer,
+            formatted_prompt,
+            max_input_tokens=self.config.max_model_len - self.config.max_tokens,
+        )
 
     def set_lora_adapter(
         self,
@@ -191,9 +217,21 @@ class EvolvingVictim:
     ) -> list[str]:
         return self.victim.respond_batch(prompts, state, victim_history_turns=victim_history_turns)
 
+    def respond_states_batch(
+        self,
+        prompts: list[str],
+        states: list[EpisodeState | None],
+        victim_history_turns: int = 0,
+    ) -> list[str]:
+        return self.victim.respond_states_batch(prompts, states, victim_history_turns=victim_history_turns)
+
     @property
     def last_debug_prompt(self) -> str | None:
         return self.victim.last_debug_prompt
+
+    @property
+    def last_debug_prompts(self) -> list[str]:
+        return self.victim.last_debug_prompts
 
     def evolve_to_adapter(self, adapter_path: str | Path) -> None:
         path = Path(adapter_path)

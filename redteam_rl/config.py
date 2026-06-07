@@ -10,7 +10,14 @@ from redteam_rl.attacker_training import AttackerFineTuneConfig
 from redteam_rl.mutators import MutatorConfig
 from redteam_rl.env import EnvConfig
 from redteam_rl.orchestration import VictimEvolutionConfig
-from redteam_rl.rewards import LlamaGuardConfig, PromptGuardConfig, QwenJudgeConfig, RewardBackend, WildGuardConfig
+from redteam_rl.rewards import (
+    LlamaGuardConfig,
+    PromptGuardConfig,
+    QwenJudgeConfig,
+    ReferenceSimilarityConfig,
+    RewardBackend,
+    WildGuardConfig,
+)
 from redteam_rl.state_features import StateFeatureConfig
 from redteam_rl.victim_training import VictimFineTuneConfig
 from redteam_rl.victims import VictimConfig
@@ -150,6 +157,13 @@ class ProjectConfig:
             **overrides,
         }
         return WildGuardConfig(**values)
+
+    def reference_similarity_config(self, **overrides: Any) -> ReferenceSimilarityConfig:
+        values = {
+            **dict(self.reward.get("reference_similarity", {})),
+            **overrides,
+        }
+        return ReferenceSimilarityConfig(**values)
 
     def victim_finetune_config(self, output_dir: str | Path | None = None, **overrides: Any) -> VictimFineTuneConfig:
         values = {
